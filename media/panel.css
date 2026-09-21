@@ -1,0 +1,108 @@
+/* 版本树面板的布局：上面一条工具栏，中间是撑满的 svg。 */
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--plot-bg);
+}
+
+#bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+#bar .path {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+}
+
+#bar .spacer {
+  flex: 1 1 auto;
+}
+
+#bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+#bar button {
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #ffffff);
+  border: none;
+  border-radius: 3px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#bar button:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+#stats {
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.warnings {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 6px 10px;
+  background: rgba(226, 163, 54, 0.12);
+  color: #e2a336;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.warnings.hidden {
+  display: none;
+}
+
+#canvas {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--plot-bg);
+}
+
+#svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+}
+
+#svg.dragging {
+  cursor: grabbing;
+}
+
+body.busy {
+  cursor: progress;
+}

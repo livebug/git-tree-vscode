@@ -1,0 +1,109 @@
+{
+  "name": "git-tree-vscode",
+  "displayName": "git-tree 版本树",
+  "description": "右键文件查看 ClearCase 风格的版本树：每条分支一条竖向轨道，版本编号、合并虚线箭头、tag 标签。",
+  "version": "0.1.0",
+  "publisher": "git-tree",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "SCM Providers",
+    "Visualization"
+  ],
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onCommand:gitTree.showVersionTree"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "gitTree.showVersionTree",
+        "title": "查看版本树",
+        "category": "git-tree"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "gitTree.showVersionTree",
+          "when": "!explorerResourceIsFolder",
+          "group": "navigation@30"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "gitTree.showVersionTree",
+          "when": "resourceScheme == file",
+          "group": "navigation@30"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "gitTree.showVersionTree"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "git-tree 版本树",
+      "properties": {
+        "gitTree.fixedBranches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "固定分支（发布层级），**顺序即层级**，越靠前越底层。留空则自动识别。"
+        },
+        "gitTree.autoFixed": {
+          "type": "boolean",
+          "default": true,
+          "description": "没有配置 gitTree.fixedBranches 时，自动按 master / dev / uat / release 的习惯识别固定分支。"
+        },
+        "gitTree.fixedPrefixes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "release"
+          ],
+          "markdownDescription": "自动识别时，名字以这些前缀开头的分支也算固定分支（例如 `release` 可以认出发版分支 `release20260919`）。"
+        },
+        "gitTree.maxCommits": {
+          "type": "number",
+          "default": 40000,
+          "description": "最多加载多少个提交（git log --all 的上限）。"
+        },
+        "gitTree.includeRemotes": {
+          "type": "boolean",
+          "default": false,
+          "description": "把 origin/* 之类的远端分支也画进版本树。"
+        },
+        "gitTree.follow": {
+          "type": "boolean",
+          "default": false,
+          "description": "跟随文件重命名（git log --follow，只在单条线性历史上有效）。"
+        },
+        "gitTree.gitPath": {
+          "type": "string",
+          "default": "git",
+          "description": "git 可执行文件路径。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -p . --watch",
+    "test": "tsc -p . && node --test out/test/*.test.js",
+    "package": "tsc -p . && vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.6.0"
+  }
+}

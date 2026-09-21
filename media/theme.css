@@ -1,0 +1,31 @@
+/*
+ * 把 VS Code 的主题变量映射成 graph.js 认识的那 5 个。
+ *
+ * graph.js 的 readTheme() 会读 body 上的 computed style，并且只认这 5 个：
+ *   --fg  --fg-muted  --border  --plot-bg  --grid
+ * SVG 的表现属性不支持 var()，所以必须靠 getComputedStyle 解析成具体色值——
+ * 也就是说这几个变量要能解析成颜色，不能是 var() 套 var() 之后拿到空字符串。
+ * 每一条都给了兜底值，主题里缺变量时不会退化成透明。
+ */
+
+body {
+  --fg: var(--vscode-editor-foreground, #cccccc);
+  --fg-muted: var(--vscode-descriptionForeground, var(--vscode-editor-foreground, #9ca3af));
+  --border: var(--vscode-panel-border, var(--vscode-editorWidget-border, #3c3c3c));
+  --plot-bg: var(--vscode-editor-background, #1e1e1e);
+  /* 中性的半透明灰，浅色和深色主题下都能看清，比写死 rgba(255,255,255,…) 安全 */
+  --grid: var(--vscode-editorIndentGuide-background, rgba(128, 128, 128, 0.18));
+}
+
+body {
+  background: var(--vscode-editor-background, #1e1e1e);
+  color: var(--vscode-editor-foreground, #cccccc);
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+}
+
+/* 分支胶囊 / 标签 / 警告条用的配色，尽量跟编辑器一致 */
+.tag,
+.warnings {
+  border-radius: 3px;
+}
