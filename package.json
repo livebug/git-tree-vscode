@@ -4,8 +4,15 @@
   "description": "右键文件查看 ClearCase 风格的版本树：每条分支一条竖向轨道，版本编号、合并虚线箭头、tag 标签。",
   "version": "0.1.0",
   "publisher": "git-tree",
-  "private": true,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/livebug/git-tree-vscode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/livebug/git-tree-vscode/issues"
+  },
+  "homepage": "https://github.com/livebug/git-tree-vscode#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -99,7 +106,8 @@
     "compile": "tsc -p .",
     "watch": "tsc -p . --watch",
     "test": "tsc -p . && node --test out/test/*.test.js",
-    "package": "tsc -p . && vsce package"
+    "vsix": "tsc -p . && npx --yes @vscode/vsce package --out git-tree-vscode-$npm_package_version.vsix",
+    "package": "npm run vsix"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

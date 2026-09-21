@@ -1,0 +1,74 @@
+name: release-vsix
+
+# 打 tag（v0.1.0 这种）就自动：编译 → 跑测试 → 打包 vsix → 发 GitHub Release 并把 vsix 挂上去。
+# 也可以在 Actions 页面手动 workflow_dispatch 触发，会用 package.json 里的版本号发一版。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 校验版本与 tag
+        id: ver
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+            if [ "$TAG" != "v$VERSION" ]; then
+              echo "::error::tag ${TAG} 与 package.json 版本 v${VERSION} 不一致"
+              exit 1
+            fi
+          else
+            TAG="v$VERSION"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "发布 tag：${TAG}"
+
+      # 测试里会临时 git init 建 fixture 仓库，runner 上先给个身份
+      - name: 配置 git 身份
+        run: |
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: 跑测试
+        run: npm test
+
+      - name: 打包 VSIX
+        run: npm run vsix
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-tree-vscode-vsix-${{ steps.ver.outputs.version }}
+          path: "*.vsix"
+          if-no-files-found: error
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          files: "*.vsix"
+          generate_release_notes: true
+          fail_on_unmatched_files: true

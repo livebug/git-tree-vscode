@@ -49,7 +49,7 @@ npm test             # 纯 Node，不需要 Python，不需要下载 Electron
 
 ```bash
 npm install
-npx @vscode/vsce package            # → git-tree-vscode-0.1.0.vsix
+npm run vsix                # → git-tree-vscode-0.1.0.vsix
 ```
 
 内网机器（不需要网络、不需要 npm）：
@@ -59,6 +59,22 @@ code --install-extension git-tree-vscode-0.1.0.vsix
 ```
 
 也可以直接在扩展面板右上角「…」→「从 VSIX 安装」。
+
+## 发版
+
+改完 `package.json` 里的 `version`，提交后打个同名 tag 即可：
+
+```bash
+npm version patch --no-git-tag-version    # 或者手改 version
+git commit -am "chore: release v0.1.1"
+git tag v0.1.1
+git push && git push origin v0.1.1
+```
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) 会校验 tag 与
+`package.json` 版本一致，然后跑测试、打 vsix、发 GitHub Release 并把 vsix 挂成附件。
+之后从 <https://github.com/livebug/git-tree-vscode/releases> 下载即可。
+也可以在 Actions 页面手动触发（`workflow_dispatch`），会用当前 `package.json` 版本发一版。
 
 ## 设置
 
