@@ -10,6 +10,9 @@
  * 对外接口（末尾导出）：global.GitTreeGraph = { Renderer, GUTTER, LANE_H, fmtDate, fmtDateShort }
  * 主题靠 readTheme() 读 body 上的 5 个 CSS 变量：--grid --plot-bg --fg --fg-muted --border
  *   （webview 里由 media/theme.css 映射到 --vscode-*，见 CONTRACT.md）
+ * 悬停信息框是 HTML 浮层（挂在 document.body 上、内联样式），不是 SVG <title>：
+ *   原生提示的文字选不中、复制不了。绘制函数照旧写 <title>，_upgradeTips() 负责升级。
+ *   宿主可通过 options.onCopy(text) 接管「复制」按钮（webview 里交给扩展写剪贴板）。
  */
 (function (global) {
   'use strict';
@@ -47,6 +50,7 @@
   // versions are numbered boxes, merges are dotted arrows between versions.
   var VT_COL_W = 196;
   var VT_BOX = 22;
+  var VT_MERGE_R = 14;      // 合并节点（菱形）半径，箭头要停在它上方
   var VT_TEXT_W = 124;
   var VT_PAD_LEFT = 92;
   var VT_PAD_RIGHT = 104;
@@ -136,6 +140,13 @@
     this.options = options || {};
     this.onNodeClick = this.options.onNodeClick || function () {};
     this.onLaneClick = this.options.onLaneClick || function () {};
+    /** 「复制」按钮交回的整段文字（宿主自己写剪贴板）；没给就用 navigator.clipboard。 */
+    this.onCopy = this.options.onCopy || null;
+    this.tipEl = null;
+    this._tipTimer = null;
+    this._tipShown = false;
+    this._tipW = 0;
+    this._tipH = 0;
     this.payload = null;
     this.mode = 'branch';
     this.k = 1;
@@ -224,6 +235,186 @@
   Renderer.prototype.size = function () {
     var rect = this.svg.getBoundingClientRect();
     return { w: Math.max(320, rect.width), h: Math.max(240, rect.height) };
+  };
+
+  // ------------------------------------------------------------------
+  // 悬停信息框：HTML 浮层，不是 SVG <title>
+  // ------------------------------------------------------------------
+  //
+  // SVG 的 <title> 是浏览器原生提示：文字**选不中、复制不了**，样式也改不了，
+  // 还只能停在光标旁边一闪一闪。所以绘制阶段照旧塞 <title>（语义清楚，导出 SVG
+  // 里也留着 aria-label），渲染完成后由 _upgradeTips() 统一升级成能选中、
+  // 能一键复制的 HTML 浮层——十几个绘制函数因此一行都不用改。
+
+  /** 离开图形到隐藏的宽限：够把鼠标从图形移进浮层里选中文字。 */
+  var TIP_HIDE_DELAY = 80;
+
+  Renderer.prototype._ensureTip = function () {
+    if (this.tipEl) return this.tipEl;
+    var theme = this.theme || readTheme();
+    var box = document.createElement('div');
+    box.className = 'graph-tip';
+    // 内联样式：渲染器自包含，不依赖宿主的 CSS
+    box.style.cssText = [
+      'position:fixed', 'left:0', 'top:0', 'z-index:99', 'display:none',
+      'align-items:flex-start', 'gap:8px',
+      'max-width:min(560px, calc(100vw - 32px))',
+      'padding:7px 9px', 'border-radius:6px',
+      'background:' + theme.plotBg, 'color:' + theme.fg,
+      'border:1px solid ' + theme.border,
+      'box-shadow:0 6px 18px rgba(0,0,0,0.35)',
+      'font:11.5px/1.6 ' + FONT_UI, 'user-select:text'
+    ].join(';');
+
+    var pre = document.createElement('pre');
+    pre.className = 'graph-tip-text';
+    pre.style.cssText =
+      'margin:0;flex:1 1 auto;min-width:0;white-space:pre-wrap;word-break:break-word;' +
+      'font:inherit;user-select:text;cursor:text;';
+    box.appendChild(pre);
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'graph-tip-copy';
+    btn.textContent = '复制';
+    btn.title = '复制这段信息';
+    btn.style.cssText = [
+      'flex:0 0 auto', 'cursor:pointer', 'font:11px ' + FONT_UI,
+      'padding:2px 7px', 'border-radius:4px', 'white-space:nowrap',
+      'background:transparent', 'color:' + theme.fgMuted,
+      'border:1px solid ' + theme.border
+    ].join(';');
+    box.appendChild(btn);
+
+    var self = this;
+    // 鼠标進到浮层里就取消隐藏，否则文字永远选不中
+    box.addEventListener('mouseenter', function () {
+      if (self._tipTimer) { clearTimeout(self._tipTimer); self._tipTimer = null; }
+    });
+    box.addEventListener('mouseleave', function () { self.hideTip(); });
+    btn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      ev.preventDefault();
+      self._copyTip();
+    });
+
+    document.body.appendChild(box);
+    this.tipEl = box;
+    return box;
+  };
+
+  Renderer.prototype._bindTip = function (node, text) {
+    if (!node || !text) return;
+    var self = this;
+    node.setAttribute('aria-label', String(text).split('\n')[0]);
+    node.addEventListener('mousemove', function (ev) {
+      if (typeof ev.clientX !== 'number') return;
+      self._showTip(text, ev);
+    });
+    node.addEventListener('mouseleave', function () {
+      if (self._tipTimer) clearTimeout(self._tipTimer);
+      self._tipTimer = setTimeout(function () { self.hideTip(); }, TIP_HIDE_DELAY);
+    });
+  };
+
+  Renderer.prototype._showTip = function (text, ev) {
+    if (!text) return;
+    var box = this._ensureTip();
+    // 从上一个元素滑到下一个时，别让上一次的隐藏计时器把新的框关掉
+    if (this._tipTimer) { clearTimeout(this._tipTimer); this._tipTimer = null; }
+    var pre = box.querySelector('.graph-tip-text');
+    if (pre.textContent !== text) {
+      pre.textContent = text;
+      this._tipW = 0;                       // 文本变了，尺寸要重新量
+      this._resizeTipToFit(box);
+    }
+    if (!this._tipShown) {
+      box.style.display = 'flex';
+      this._tipShown = true;
+      this._tipW = 0;
+    }
+    if (!this._tipW) {
+      this._tipW = box.offsetWidth;
+      this._tipH = box.offsetHeight;
+    }
+    this._placeTip(ev);
+  };
+
+  /** 窗口太矮时别让浮层冒到视口外：超了就收紧一下行高。 */
+  Renderer.prototype._resizeTipToFit = function (box) {
+    var pre = box.querySelector('.graph-tip-text');
+    if (!pre) return;
+    pre.style.maxHeight = Math.max(120, Math.round(window.innerHeight * 0.6)) + 'px';
+    pre.style.overflow = 'auto';
+  };
+
+  Renderer.prototype._placeTip = function (ev) {
+    var box = this.tipEl;
+    if (!box) return;
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    var w = this._tipW || 0;
+    var h = this._tipH || 0;
+    var x = ev.clientX + 14;
+    var y = ev.clientY + 18;
+    if (x + w > vw - 8) x = Math.max(8, ev.clientX - w - 14);
+    if (y + h > vh - 8) y = Math.max(8, ev.clientY - h - 14);
+    box.style.left = x + 'px';
+    box.style.top = y + 'px';
+  };
+
+  Renderer.prototype.hideTip = function () {
+    if (this._tipTimer) { clearTimeout(this._tipTimer); this._tipTimer = null; }
+    if (!this.tipEl || !this._tipShown) return;
+    this.tipEl.style.display = 'none';
+    this._tipShown = false;
+  };
+
+  Renderer.prototype._copyTip = function () {
+    var box = this.tipEl;
+    if (!box) return;
+    var pre = box.querySelector('.graph-tip-text');
+    var text = pre ? pre.textContent || '' : '';
+    if (!text) return;
+    var btn = box.querySelector('.graph-tip-copy');
+    var flash = function (label) {
+      if (!btn) return;
+      btn.textContent = label;
+      setTimeout(function () { if (btn) btn.textContent = '复制'; }, 1400);
+    };
+    if (this.onCopy) {
+      this.onCopy(text);
+      flash('已复制');
+      return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { flash('已复制'); },
+        function () { flash('复制失败'); }
+      );
+      return;
+    }
+    // 实在没剪贴板：把文字选中，用户自己按 Ctrl+C
+    var range = document.createRange();
+    range.selectNodeContents(pre);
+    var sel = window.getSelection();
+    if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+    flash('请按 Ctrl+C');
+  };
+
+  /** 把绘制阶段生成的 <title> 统一换成 HTML 浮层（每个元素只做一次）。 */
+  Renderer.prototype._upgradeTips = function () {
+    var titles = this.svg.querySelectorAll('title');
+    if (!titles.length) return;
+    var collected = [];
+    for (var i = 0; i < titles.length; i++) collected.push(titles[i]);
+    for (var j = 0; j < collected.length; j++) {
+      var node = collected[j];
+      var host = node.parentNode;
+      var text = node.textContent || '';
+      if (host) host.removeChild(node);
+      if (host && text) this._bindTip(host, text);
+    }
   };
 
   Renderer.prototype.setData = function (payload, mode) {
@@ -383,6 +574,9 @@
 
   Renderer.prototype._applyTransform = function () {
     if (!this.root) return;
+    // 重绘 / 缩放 / 拖图之后，旧的悬停框可能指着一个已经不存在的元素
+    this.hideTip();
+    this._upgradeTips();
     var vstyle = this._vstyle();
     this.root.setAttribute('transform', 'translate(' + this.tx + ',' + this.ty + ') scale(' + this.k + ')');
     if (vstyle === 'mermaid') {
@@ -636,6 +830,20 @@
     lines.push('    ' + (lane.tipAuthor || ''));
     if (lane.parentName) lines.push('分叉自: ' + lane.parentName + (lane.forkShort ? ' @ ' + lane.forkShort : ''));
     lines.push('本分支独有提交: ' + lane.ownCount + ' 个');
+    var versions = lane.versions || [];
+    if (versions.length) {
+      lines.push('版本（点方块看这个版本改了什么）：');
+      var cap = Math.min(versions.length, 8);
+      for (var i = 0; i < cap; i++) {
+        var v = versions[i];
+        lines.push('  /' + lane.name + '/' + v.n + '  ' + v.short + '  ' + fmtDate(v.ts) + '  ' +
+          (v.subject || '') + (v.status ? '  · ' + v.status : ''));
+      }
+      if (versions.length > cap) lines.push('  …还有 ' + (versions.length - cap) + ' 个');
+    }
+    if (lane.mergeCount) {
+      lines.push('合并节点: ' + lane.mergeCount + ' 个（点菱形看本分支上合并前后的对比）');
+    }
     if (lane.mergedInto && lane.mergedInto.length) {
       var parts = lane.mergedInto.map(function (m) {
         return m.short ? m.intoBranch + ' @ ' + m.short : m.intoBranch + '（经其它分支带入）';
@@ -896,9 +1104,9 @@
     for (var i = 0; i < this.lanes.length; i++) {
       (function (lane) {
         var x = self.mX(lane.lane);
-        var versions = lane.versions || [];
-        var y1 = versions.length ? self.mY(versions[0].x) : self.mY(lane.x1);
-        var y2 = versions.length ? self.mY(versions[versions.length - 1].x) : self.mY(lane.x2);
+        // 轨道的上下端由后端算好（含合并节点），见 CONTRACT.md
+        var y1 = self.mY(lane.x1 === undefined ? 0 : lane.x1);
+        var y2 = self.mY(lane.x2 === undefined ? lane.x1 : lane.x2);
         var g = el('g', { 'data-lane': lane.lane });
         if (lane.role === 'carrier') g.setAttribute('opacity', '0.55');
 
@@ -925,6 +1133,11 @@
     if (!this.edgeLayer) return;
     var self = this;
     this.edgeLayer.innerHTML = '';
+    // 边的 payload 里只有归一化时间 x1/x2，没有原始 ts（见 CONTRACT.md），日期要自己反推
+    var span = Math.max(1, this.range.maxTs - this.range.minTs);
+    var stampOf = function (x) {
+      return Math.round((x || 0) * span + self.range.minTs);
+    };
     for (var i = 0; i < this.edges.length; i++) {
       (function (e) {
         var from = self.laneById[e.fromLane];
@@ -933,30 +1146,33 @@
         var path, title = el('title');
 
         if (e.kind === 'fork') {
-          // branch point: the child track leaves the parent track
+          // 分支点：子轨道从父轨道分出去
           var fy = self.mY(e.x1);
           path = el('path', {
             d: 'M' + self.mX(from.lane) + ',' + fy + ' H' + self.mX(to.lane),
             fill: 'none', stroke: to.color, 'stroke-width': 1.6,
             'stroke-dasharray': '5 4', opacity: 0.5
           });
-          title.textContent = '分叉 ' + to.name + '  ←  ' + from.name + '\n' + e.short + '  ' + (e.subject || '');
+          title.textContent = '分支点 ' + fmtDate(stampOf(e.x1)) + '\n' + to.name + ' 从 ' + from.name + ' 分出来' +
+            '\n' + e.short + '  ' + (e.subject || '');
         } else {
-          // merge: dotted arrow from the source version to the version it created
+          // 合并：箭头从源轨道上的那个节点（版本或上一层合并）落到本轨道上的合并节点
           var x1 = self.mX(from.lane);
           var y1 = self.mY(e.x1);
-          var target = e.targetVersion;
+          var target = e.targetNode;
           var x2 = self.mX(target ? target.lane : to.lane);
           var y2 = self.mY(target ? self.normOf(target.ts) : e.x2);
+          var gap = target ? VT_MERGE_R + 3 : 1;
           var c = Math.max((y2 - y1) * 0.45, 24);
           path = el('path', {
             d: 'M' + x1 + ',' + y1 +
-               ' C' + x1 + ',' + (y1 + c) + ' ' + x2 + ',' + (y2 - c) + ' ' + x2 + ',' + (y2 - 10),
+               ' C' + x1 + ',' + (y1 + c) + ' ' + x2 + ',' + (y2 - c) + ' ' + x2 + ',' + (y2 - gap),
             fill: 'none', stroke: from.color, 'stroke-width': 1.8,
             'stroke-dasharray': '5 4', opacity: 0.75, 'stroke-linecap': 'round'
           });
           self.edgeLayer.appendChild(el('path', {
-            d: 'M' + (x2 - 5) + ',' + (y2 - 11) + ' L' + (x2 + 5) + ',' + (y2 - 11) + ' L' + x2 + ',' + (y2 - 1) + ' Z',
+            d: 'M' + (x2 - 5) + ',' + (y2 - gap - 10) + ' L' + (x2 + 5) + ',' + (y2 - gap - 10) +
+               ' L' + x2 + ',' + (y2 - gap) + ' Z',
             fill: from.color, opacity: 0.85
           }));
           if (!target) {
@@ -964,9 +1180,11 @@
               cx: x2, cy: y2, r: 4.5, fill: self.theme.plotBg, stroke: from.color, 'stroke-width': 1.6
             }));
           }
-          title.textContent = '合并 ' + fmtDate(e.ts) +
-            '\n' + to.name + '  ←  ' + from.name +
-            (target ? '\n落在版本 /' + to.name + '/' + target.n : '\n（该分支没有改过这个文件，只是继承）') +
+          title.textContent = '合并 ' + fmtDate(stampOf(e.x2)) + '\n' + to.name + '  ←  ' + from.name +
+            (e.fromKind === 'merge'
+              ? '\n接力 ' + from.name + ' 上那次合并（' + e.fromSha.slice(0, 8) + '）'
+              : '\n把 ' + from.name + ' 的 ' + (e.fromN ? '/' + from.name + '/' + e.fromN : e.fromSha.slice(0, 8)) + ' 带进来') +
+            (target ? '\n落在 ' + to.name + ' 的合并节点 ' + target.short : '') +
             '\n' + e.short + '  ' + (e.subject || '');
         }
         path.appendChild(title);
@@ -989,23 +1207,65 @@
         if (!lane) return;
         var x = self.mX(n.lane);
         var y = self.mY(n.x);
+        var g = el('g', { 'class': 'node', 'data-sha': n.sha, 'data-lane': n.lane });
+
+        if (n.kind === 'merge') {
+          // 合并节点：把别的轨道的改动带进本分支的那次合并。
+          // 它落在**接收方**的轨道上，所以点它看的就是这条分支上合并前后的对比。
+          var from = n.via ? self.laneById[n.via.lane] : null;
+          var tone = from ? from.color : lane.color;
+          g.appendChild(el('path', {
+            d: 'M' + x + ',' + (y - VT_MERGE_R) + ' L' + (x + VT_MERGE_R) + ',' + y +
+               ' L' + x + ',' + (y + VT_MERGE_R) + ' L' + (x - VT_MERGE_R) + ',' + y + ' Z',
+            fill: tone, stroke: self.theme.plotBg, 'stroke-width': 1.5
+          }));
+          g.appendChild(el('path', {
+            d: 'M' + x + ',' + (y - VT_MERGE_R * 0.5) + ' L' + (x + VT_MERGE_R * 0.5) + ',' + y +
+               ' L' + x + ',' + (y + VT_MERGE_R * 0.5) + ' L' + (x - VT_MERGE_R * 0.5) + ',' + y + ' Z',
+            fill: 'none', stroke: '#ffffff', 'stroke-width': 1, opacity: 0.75
+          }));
+
+          var mtext = '← ' + (n.via ? n.via.name : '合并');
+          if (n.subject) mtext += '  ' + n.subject;
+          var mshown = truncateToWidth(mtext, font, VT_TEXT_W);
+          var mt = el('text', {
+            x: x + VT_MERGE_R + 6, y: y + 3.5, 'font-size': 10,
+            fill: self.theme.fg, 'font-family': FONT_UI,
+            stroke: self.theme.plotBg, 'stroke-width': 2.6, 'stroke-linejoin': 'round',
+            'paint-order': 'stroke'
+          });
+          mt.textContent = mshown;
+          g.appendChild(mt);
+
+          var mtip = el('title');
+          mtip.textContent = self._mergeTooltip(n, lane);
+          g.appendChild(mtip);
+
+          g.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            self.onNodeClick(n, lane, ev);
+          });
+          self.nodeLayer.appendChild(g);
+          return;
+        }
+
         var version = null;
         var versions = lane.versions || [];
         for (var k = 0; k < versions.length; k++) {
           if (versions[k].sha === n.sha) { version = versions[k]; break; }
         }
-        var g = el('g', { 'class': 'node', 'data-sha': n.sha, 'data-lane': n.lane });
+        var no = version ? version.n : n.n;
 
         g.appendChild(el('rect', {
           x: x - VT_BOX / 2, y: y - VT_BOX / 2, width: VT_BOX, height: VT_BOX, rx: 4,
           fill: lane.color, stroke: self.theme.plotBg, 'stroke-width': 1.5
         }));
-        if (version) {
+        if (no) {
           var num = el('text', {
             x: x, y: y + 3.7, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 700,
             fill: '#ffffff', 'font-family': FONT_MONO
           });
-          num.textContent = String(version.n);
+          num.textContent = String(no);
           g.appendChild(num);
         }
 
@@ -1045,16 +1305,39 @@
         t.textContent = (version ? self._branchPathOf(lane) + '/' + version.n + '  ' : '') +
           n.short + '  ' + fmtDate(n.ts, true) + '\n' + lane.name + '\n' + (n.subject || '') +
           '\n' + (n.author || '') + (n.status ? '\n状态: ' + n.status : '') +
-          (labels.length ? '\n标签: ' + labels.join(', ') : '');
+          (labels.length ? '\n标签: ' + labels.join(', ') : '') +
+          '\n点击：看这个版本改了什么（与前一个版本的对比）';
         g.appendChild(t);
 
         g.addEventListener('click', function (ev) {
           ev.stopPropagation();
-          self.onNodeClick(n, lane);
+          self.onNodeClick(n, lane, ev);
         });
         self.nodeLayer.appendChild(g);
       })(this.nodes[i]);
     }
+  };
+
+  /** 合并节点的悬停说明：改动从哪来、点下去会看到什么。 */
+  Renderer.prototype._mergeTooltip = function (n, lane) {
+    var lines = [];
+    lines.push('合并 ' + n.short + '  ' + fmtDate(n.ts, true));
+    lines.push('落在分支：' + lane.name);
+    if (n.via) {
+      if (n.via.kind === 'merge') {
+        lines.push('把 ' + n.via.name + ' 上那次合并（' + n.via.short + '）接力过来的改动带进本分支');
+      } else {
+        lines.push('把 ' + n.via.name + ' 的 ' +
+          (n.via.n ? '/' + n.via.name + '/' + n.via.n : n.via.short) + ' 带进本分支');
+      }
+    } else {
+      lines.push('来源轨道没画在本图里（那条分支与这个文件无关）');
+    }
+    if (n.subject) lines.push(n.subject);
+    if (n.author) lines.push(n.author);
+    lines.push('点击：看这个文件在 ' + lane.name + ' 上合并前后的对比');
+    lines.push('Alt+点击：看来源那个版本自己的改动');
+    return lines.join('\n');
   };
 
   Renderer.prototype._drawEdgesM = function () {
@@ -1238,8 +1521,9 @@
 
   Renderer.prototype._laneSub = function (lane) {
     if (this._vstyle() === 'version-tree') {
-      if (lane.role === 'carrier') return '继承改动';
-      return (lane.versions || []).length + ' 个版本';
+      var merges = lane.mergeCount ? ' · ' + lane.mergeCount + ' 次合并' : '';
+      if (lane.role === 'carrier') return '继承改动' + merges;
+      return (lane.versions || []).length + ' 个版本' + merges;
     }
     if (this.mode === 'file') {
       return lane.role === 'author' ? '提交了 ' + lane.ownCount + ' 次改动' : '承载改动';
@@ -1663,6 +1947,7 @@
 
   Renderer.prototype.resize = function () {
     if (!this.payload) return;
+    this.hideTip();
     var s = this.size();
     var vstyle = this._vstyle();
     var full = vstyle === 'mermaid' || vstyle === 'version-tree';
@@ -1673,6 +1958,8 @@
     }
     this._drawLabels();
     this._drawAxis();
+    // 表头（_drawMermaidLabels）是在这里画的，它的悬停框也要升级
+    this._upgradeTips();
   };
 
   // ------------------------------------------------------------------

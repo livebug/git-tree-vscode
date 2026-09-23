@@ -12,13 +12,15 @@
  * 而且它们会被排到 `release` 该在的层级上，而不是堆到末尾。
  */
 
-import { DEFAULT_FIXED, RefInfo } from './repo';
+import { BranchScope, DEFAULT_FIXED, RefInfo, branchPart, selectRefs } from './repo';
 
 export interface SuggestOptions {
   /** 精确匹配之外，还认这些前缀。 */
   prefixes?: readonly string[];
   /** 上限，防止一个畸形仓库里冒出几十条"固定分支"。 */
   max?: number;
+  /** 从哪个范围里挑（默认只看本地）。 */
+  scope?: BranchScope;
 }
 
 /**
@@ -38,7 +40,10 @@ export function suggestFixed(
   const prefixes = options.prefixes ?? [];
   const max = options.max ?? 12;
 
-  const names = refs.filter((r) => !r.remote).map((r) => r.name);
+  // 远端轨道用去掉 remote 名之后的名字参分层级（`origin/dev` 按 `dev` 那一层算），
+  // 这样 `只看远程` 时发布层级不会因为多了个 `origin/` 前缀而整个认不出来。
+  const scoped = selectRefs(refs, options.scope ?? 'local');
+  const names = [...new Set(scoped.map((r) => (r.remote ? branchPart(r.name) : r.name)))];
   if (!names.length) return [];
 
   const tierOf = (name: string): number => {
@@ -81,11 +86,18 @@ export function resolveFixed(
   head: string | null,
   options: SuggestOptions & { auto?: boolean } = {},
 ): { fixed: string[]; source: 'configured' | 'auto' | 'none' } {
+  const scope = options.scope ?? 'local';
+  const scoped = selectRefs(refs, scope);
   const explicit = configured.map((s) => s.trim()).filter(Boolean);
   if (explicit.length) {
-    const known = new Set(refs.map((r) => r.name));
+    // 用户可能写 `dev`，也可能写 `origin/dev`：两种都算数
+    const known = new Set(scoped.map((r) => r.name));
+    const parts = new Set(scoped.map((r) => (r.remote ? branchPart(r.name) : r.name)));
     // 保留用户给的名字里确实存在的，顺序照旧
-    return { fixed: explicit.filter((name) => known.has(name)), source: 'configured' };
+    return {
+      fixed: explicit.filter((name) => known.has(name) || parts.has(name)),
+      source: 'configured',
+    };
   }
   if (options.auto === false) return { fixed: [], source: 'none' };
   const auto = suggestFixed(refs, head, options);

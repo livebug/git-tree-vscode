@@ -2,7 +2,7 @@
   "name": "git-tree-vscode",
   "displayName": "git-tree 版本树",
   "description": "右键文件查看 ClearCase 风格的版本树：每条分支一条竖向轨道，版本编号、合并虚线箭头、tag 标签。",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "publisher": "git-tree",
   "license": "MIT",
   "repository": {
@@ -84,10 +84,26 @@
           "default": 40000,
           "description": "最多加载多少个提交（git log --all 的上限）。"
         },
+        "gitTree.branchScope": {
+          "type": "string",
+          "enum": [
+            "local",
+            "remote",
+            "all"
+          ],
+          "enumDescriptions": [
+            "只看本地分支（默认）",
+            "只看 origin/* 之类的远端分支",
+            "本地 + 远端都看（同名的远端镜像会去掉一份）"
+          ],
+          "default": "local",
+          "markdownDescription": "版本树看哪些分支。面板右上角也能随时切换（以面板上的选择为准）。"
+        },
         "gitTree.includeRemotes": {
           "type": "boolean",
           "default": false,
-          "description": "把 origin/* 之类的远端分支也画进版本树。"
+          "markdownDescription": "**已弃用**，请改用 `gitTree.branchScope`。开着它等价于 `branchScope: \"all\"`。",
+          "deprecationMessage": "已弃用：请改用 gitTree.branchScope"
         },
         "gitTree.follow": {
           "type": "boolean",

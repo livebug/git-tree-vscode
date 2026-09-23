@@ -15,7 +15,15 @@
 
 import { CommitStore } from './gitstore';
 import { LaneInfo, laneColor, laneContaining, resolveLineage, statusText } from './lineage';
-import { ChangeInfo, FileRecord, RepoHandle } from './repo';
+import {
+  BranchScope,
+  ChangeInfo,
+  FileRecord,
+  RefInfo,
+  RepoHandle,
+  branchPart,
+  selectRefs,
+} from './repo';
 
 // ---------------------------------------------------------------------------
 // 产出类型（见 CONTRACT.md）
@@ -33,25 +41,43 @@ export interface VersionPayload {
   x: number;
 }
 
-export interface TargetVersion {
+/** 合并箭头落在目标轨道上的那个节点——目标分支上的合并节点。 */
+export interface TargetNode {
   lane: number;
   sha: string;
   short: string;
-  n: number;
+  kind: 'merge';
   ts: number;
+  n: number | null;
+}
+
+/** 合并节点是从哪条轨道的哪个节点把改动带进来的。 */
+export interface NodeVia {
+  lane: number;
+  name: string;
+  sha: string;
+  short: string;
+  kind: 'version' | 'merge';
+  n: number | null;
 }
 
 export interface EdgePayload {
   kind: 'merge' | 'fork';
   fromLane: number;
   toLane: number;
+  /** 源端节点的 sha（版本节点就是那个提交；合并节点就是那次合并）。 */
+  fromSha: string;
+  fromKind: 'version' | 'merge' | 'fork';
+  /** 源端是版本节点时的版本号（/分支/n）；否则为 null。 */
+  fromN: number | null;
+  /** "merge" 边：合并提交本身。"fork" 边：分叉点提交。 */
   sha: string;
   short: string;
   subject: string;
   author: string;
   x1: number;
   x2: number;
-  targetVersion: TargetVersion | null;
+  targetNode: TargetNode | null;
 }
 
 export interface NodePayload {
@@ -61,10 +87,14 @@ export interface NodePayload {
   ts: number;
   author: string;
   subject: string;
-  kind: 'commit';
+  /** version = 本分支自己改了这个文件的提交；merge = 把改动带进本分支的那次合并。 */
+  kind: 'version' | 'merge';
+  /** 版本号（ClearCase 的 /分支/n）；合并节点为 null。 */
+  n: number | null;
   status: string;
   x: number;
   labels: string[];
+  via: NodeVia | null;
 }
 
 export interface LanePayload {
@@ -75,6 +105,8 @@ export interface LanePayload {
   remote: boolean;
   role: 'author' | 'carrier';
   versions: VersionPayload[];
+  /** 本轨道上的合并节点个数（把别人的改动带进来的合并）。 */
+  mergeCount: number;
   tip: string | null;
   tipShort: string | null;
   tipTs: number;
@@ -112,6 +144,8 @@ export interface CommitRowPayload {
 
 export interface FileGraphPayload {
   path: string;
+  /** 本图关心的是哪个范围的分支（本地 / 远端 / 全部）。 */
+  scope: BranchScope;
   follow: boolean;
   lanes: LanePayload[];
   nodes: NodePayload[];
@@ -123,6 +157,9 @@ export interface FileGraphPayload {
 }
 
 export interface FileGraphOptions {
+  /** 看哪些分支：本地 / 远端 / 全部。默认本地。 */
+  scope?: BranchScope;
+  /** @deprecated 旧设置项，为 true 等价于 `scope: 'all'`。 */
   includeRemotes?: boolean;
   follow?: boolean;
   maxCommits?: number;
@@ -143,23 +180,23 @@ const MAX_SCAN = 300;
 export function buildLanes(
   repo: RepoHandle,
   fixedNames: readonly string[],
-  includeRemotes = false,
+  scope: BranchScope = 'local',
 ): LaneInfo[] {
   const store = repo.store();
-  const refs = repo.refs();
+  const refs = selectRefs(repo.refs(), scope);
   const byName = new Map(refs.map((r) => [r.name, r]));
 
   const allLanes: LaneInfo[] = [];
   const taken = new Set<string>();
 
   for (const name of fixedNames) {
-    const ref = byName.get(name);
-    if (!ref || taken.has(name)) continue;
+    const ref = matchFixedRef(refs, byName, name);
+    if (!ref || taken.has(ref.name)) continue;
     // 注意：先占位再看 tip —— 名字重复或指向未知提交时，它也不该掉到"其他分支"里去
-    taken.add(name);
+    taken.add(ref.name);
     const tip = store.get(ref.sha);
     if (tip === undefined) continue;
-    const lane = new LaneInfo(name, 'fixed');
+    const lane = new LaneInfo(ref.name, 'fixed');
     lane.tip = tip;
     lane.tipTs = store.ts[tip];
     lane.remote = ref.remote;
@@ -168,7 +205,6 @@ export function buildLanes(
 
   for (const ref of refs) {
     if (taken.has(ref.name)) continue;
-    if (ref.remote && !includeRemotes) continue;
     const tip = store.get(ref.sha);
     if (tip === undefined) continue;
     const lane = new LaneInfo(ref.name, 'other');
@@ -188,13 +224,30 @@ export function buildLanes(
   return allLanes;
 }
 
+/**
+ * 固定分支名 → 这个范围里真存在的 ref。
+ *
+ * 先精确同名（`dev` 命中本地 `dev`；用户手写成 `origin/dev` 也能直接命中），
+ * 再退回“远端轨道用名字后半段匹配”——`只看远程` 时发布层级全是 `origin/*`，
+ * 不这么匹配就一条固定分支也认不出来。
+ */
+function matchFixedRef(
+  refs: readonly RefInfo[],
+  byName: Map<string, RefInfo>,
+  name: string,
+): RefInfo | undefined {
+  const exact = byName.get(name);
+  if (exact) return exact;
+  return refs.find((ref) => ref.remote && branchPart(ref.name) === name);
+}
+
 export function buildFileGraph(
   repo: RepoHandle,
   filePath: string,
   fixedNames: readonly string[],
   options: FileGraphOptions = {},
 ): FileGraphPayload {
-  const includeRemotes = options.includeRemotes ?? false;
+  const scope: BranchScope = options.scope ?? (options.includeRemotes ? 'all' : 'local');
   const follow = options.follow ?? false;
   const maxCommits = options.maxCommits ?? 2000;
 
@@ -206,6 +259,7 @@ export function buildFileGraph(
   if (!records.length) {
     return {
       path: filePath,
+      scope,
       follow,
       lanes: [],
       nodes: [],
@@ -226,7 +280,7 @@ export function buildFileGraph(
     warnings.push('部分改动提交不在已加载的历史窗口内，已被忽略。');
   }
 
-  const allLanes = buildLanes(repo, fixedNames, includeRemotes);
+  const allLanes = buildLanes(repo, fixedNames, scope);
 
   const fileIndices = [...recordByIdx.keys()].sort((a, b) => ts[a] - ts[b]);
   const fileSet = new Set(fileIndices);
@@ -307,7 +361,6 @@ export function buildFileGraph(
   });
 
   const laneNameByIndex = new Map(contributing.map((lane) => [lane.lane, lane.name]));
-  const authorLanes = contributing.filter((lane) => lane.hits.length);
   const authorNameOfCommit = new Map<number, string>();
   for (const [commit, entry] of bestAuthor) authorNameOfCommit.set(commit, entry.lane.name);
 
@@ -319,29 +372,25 @@ export function buildFileGraph(
     if (maxTs === null || value > maxTs) maxTs = value;
   };
 
-  // -- 节点 ----------------------------------------------------------
-  const nodes: NodePayload[] = [];
+  // -- 每条轨道自己的节点 ---------------------------------------------
+  // 一条轨道上有两种东西：
+  //   version 这条分支**自己改了这个文件**的提交（ClearCase 的 /分支/n）
+  //   merge   把别的轨道的改动**带进这条分支**的那次合并
+  // 有了合并节点，"a 合并到 b"就落在 b 这条轨道的具体位置上：点它就能看 b 上
+  // 这个文件合并前后的对比，而不用去追那些横穿全图的连线。
+  const hitsByLane = new Map<number, number[]>();
   for (const lane of contributing) {
-    const hits = [...new Set(lane.hits)].sort((a, b) => ts[a] - ts[b]);
-    for (const idx of hits) {
-      const rec = recordByIdx.get(idx);
-      nodes.push({
-        lane: lane.lane,
-        sha: store.sha[idx],
-        short: store.short(idx),
-        ts: ts[idx],
-        author: store.author[idx],
-        subject: store.subject[idx],
-        kind: 'commit',
-        status: statusText(rec?.changes ?? []),
-        x: 0,
-        labels: [],
-      });
-      bump(ts[idx]);
-    }
+    hitsByLane.set(lane.lane, [...new Set(lane.hits)].sort((a, b) => ts[a] - ts[b]));
   }
+  const versionNoByLane = new Map<number, Map<number, number>>();
+  for (const [laneIndex, hits] of hitsByLane) {
+    versionNoByLane.set(laneIndex, new Map(hits.map((commit, i) => [commit, i + 1])));
+  }
+  const authorLaneByCommit = new Map<number, LaneInfo>();
+  for (const [commit, entry] of bestAuthor) authorLaneByCommit.set(commit, entry.lane);
+  const contributingSet = new Set(contributing);
 
-  // -- 规则 7 下半：传播边 ------------------------------------------
+  // 每条轨道第一父链上的合并，按时间升序（找"带进来的那次合并"要在这上面扫）
   const chainMerges = new Map<number, number[]>();
   const chainMergeTs = new Map<number, number[]>();
   for (const lane of contributing) {
@@ -368,76 +417,271 @@ export function buildFileGraph(
     return cached;
   };
 
-  const edgeMap = new Map<string, EdgePayload & { fromTs: number; ts: number; fromSha: string }>();
+  const ancestorCache = new Map<number, Set<number>>();
+  const ancestors = (idx: number): Set<number> => {
+    let cached = ancestorCache.get(idx);
+    if (cached === undefined) {
+      cached = store.ancestors(idx);
+      ancestorCache.set(idx, cached);
+    }
+    return cached;
+  };
 
-  for (const lane of authorLanes) {
-    for (const idx of lane.hits) {
-      const fwd = forward(idx);
-      for (const target of contributing) {
-        if (target === lane || !target.reach.has(idx)) continue;
-        const candidates = chainMerges.get(target.lane) ?? [];
-        const start = candidates.length
-          ? lowerBound(chainMergeTs.get(target.lane) as number[], ts[idx])
-          : 0;
-
-        let entry: number | null = null;
-        for (const m of candidates.slice(start, start + MAX_SCAN)) {
-          const parents = store.parents[m];
-          // 改动必须是从**非第一父**带进来的：如果第一父里已经有了，
-          // 那这条分支早就有了这个改动，这次合并跟它没关系。
-          if (!fwd.has(parents[0]) && parents.slice(1).some((p) => fwd.has(p))) {
-            entry = m;
-            break;
-          }
-        }
-
-        if (entry !== null) {
-          const key = `merge|${lane.lane}|${target.lane}|${store.sha[entry]}`;
-          const existing = edgeMap.get(key);
-          if (existing === undefined) {
-            edgeMap.set(key, {
-              kind: 'merge',
-              fromLane: lane.lane,
-              toLane: target.lane,
-              fromTs: ts[idx],
-              ts: ts[entry],
-              fromSha: store.sha[idx],
-              sha: store.sha[entry],
-              short: store.short(entry),
-              subject: store.subject[entry],
-              author: store.author[entry],
-              x1: 0,
-              x2: 0,
-              targetVersion: null,
-            });
-          } else if (ts[idx] < existing.fromTs) {
-            existing.fromTs = ts[idx];
-            existing.fromSha = store.sha[idx];
-          }
-          bump(ts[entry]);
-        } else {
-          // 可达但找不到"带入"的合并：画成分叉线（改动是自己这里产生、后被别人继承）
-          edgeMap.set(`fork|${lane.lane}|${target.lane}|${store.sha[idx]}`, {
-            kind: 'fork',
-            fromLane: lane.lane,
-            toLane: target.lane,
-            fromTs: ts[idx],
-            ts: ts[idx],
-            fromSha: store.sha[idx],
-            sha: store.sha[idx],
-            short: store.short(idx),
-            subject: store.subject[idx],
-            author: store.author[idx],
-            x1: 0,
-            x2: 0,
-            targetVersion: null,
-          });
+  /**
+   * 把 `commit` 带进 `lane` 的那次合并 —— 规则 7 下半的老判据，原样保留。
+   *
+   * 改动必须是从**非第一父**带进来的：第一父里已经有了，说明这条分支早就有了它，
+   * 这次合并跟它没关系。结果缓存起来，后面的交接判断会反复问同一件事。
+   */
+  const entryCache = new Map<string, number | null>();
+  const entryMerge = (lane: LaneInfo, commit: number): number | null => {
+    const key = `${lane.lane}|${commit}`;
+    const cached = entryCache.get(key);
+    if (cached !== undefined) return cached;
+    let found: number | null = null;
+    const candidates = chainMerges.get(lane.lane) ?? [];
+    if (candidates.length) {
+      const fwd = forward(commit);
+      const times = chainMergeTs.get(lane.lane) as number[];
+      const start = lowerBound(times, ts[commit]);
+      for (const m of candidates.slice(start, start + MAX_SCAN)) {
+        const parents = store.parents[m];
+        if (!fwd.has(parents[0]) && parents.slice(1).some((p) => fwd.has(p))) {
+          found = m;
+          break;
         }
       }
     }
+    entryCache.set(key, found);
+    return found;
+  };
+
+  interface Handoff {
+    lane: LaneInfo;
+    kind: 'version' | 'merge';
+    sha: string;
+    ts: number;
+    n: number | null;
   }
 
-  const edges = [...edgeMap.values()];
+  /**
+   * 改动是在哪儿**交到**这条轨道手上的。
+   *
+   * 优先认**最近一次交接**：dev → uat → release 这样一趟走上来的改动，release 上的
+   * 箭头应该来自 uat 的合并节点，而不是从 dev 一路拉一根横穿全图的长线回到源头。
+   * 于是每条箭头只连相邻两条轨道，"一堆交叉连线"就散了；真的没有中间轨道接力时
+   * （比如 a 直接合进 b），才落回作者那根版本节点上。
+   */
+  const handoffOf = (lane: LaneInfo, commit: number, m: number): Handoff | null => {
+    const parents = store.parents[m];
+    const fwd = forward(commit);
+    const intoAnc = ancestors(parents[0]);
+    let best: Handoff | null = null;
+    for (let k = 1; k < parents.length; k++) {
+      if (!fwd.has(parents[k])) continue;
+      const fromAnc = ancestors(parents[k]);
+      for (const other of contributing) {
+        if (other.lane === lane.lane) continue;
+        const relay = entryMerge(other, commit);
+        if (relay === null || relay === m) continue;
+        // 中间这条轨道确实先拿到了改动，而这条轨道当时还没有它
+        if (!fromAnc.has(relay) || intoAnc.has(relay)) continue;
+        if (best === null || ts[relay] > best.ts) {
+          best = { lane: other, kind: 'merge', sha: store.sha[relay], ts: ts[relay], n: null };
+        }
+      }
+    }
+    if (best) return best;
+
+    const author = authorLaneByCommit.get(commit);
+    if (author === undefined || !contributingSet.has(author)) return null;
+    return {
+      lane: author,
+      kind: 'version',
+      sha: store.sha[commit],
+      ts: ts[commit],
+      n: versionNoByLane.get(author.lane)?.get(commit) ?? null,
+    };
+  };
+
+  /** 一条轨道 × 一次"带进来"的合并 = 一个合并节点。 */
+  interface MergePoint {
+    lane: LaneInfo;
+    merge: number;
+    sources: Handoff[];
+  }
+
+  const mergePoints = new Map<string, MergePoint>();
+  for (const lane of contributing) {
+    if (lane.tip === null) continue;
+    const own = new Set(hitsByLane.get(lane.lane) ?? []);
+    for (const commit of fileIndices) {
+      // 自己改的会画成版本节点，这里只关心"别人改的、被我合并进来的"
+      if (own.has(commit) || !lane.reach.has(commit)) continue;
+      const m = entryMerge(lane, commit);
+      if (m === null) continue;
+      const key = `${lane.lane}|${m}`;
+      let point = mergePoints.get(key);
+      if (point === undefined) {
+        point = { lane, merge: m, sources: [] };
+        mergePoints.set(key, point);
+      }
+      const source = handoffOf(lane, commit, m);
+      if (source === null) continue;
+      if (point.sources.some((s) => s.lane.lane === source.lane.lane && s.sha === source.sha)) {
+        continue;
+      }
+      point.sources.push(source);
+      bump(ts[m]);
+    }
+  }
+
+  const points = [...mergePoints.values()].sort(
+    (a, b) => a.lane.lane - b.lane.lane || ts[a.merge] - ts[b.merge],
+  );
+  for (const point of points) {
+    point.sources.sort((a, b) => a.lane.lane - b.lane.lane || a.ts - b.ts);
+  }
+
+  /** 每条轨道上的合并节点（画轨道范围、数合并次数都要用）。 */
+  const mergePointsFor = new Map<number, MergePoint[]>();
+  for (const point of points) {
+    const list = mergePointsFor.get(point.lane.lane);
+    if (list) list.push(point);
+    else mergePointsFor.set(point.lane.lane, [point]);
+  }
+
+  // -- 节点 ----------------------------------------------------------
+  const nodes: NodePayload[] = [];
+  for (const lane of contributing) {
+    const hits = hitsByLane.get(lane.lane) ?? [];
+    const numbers = versionNoByLane.get(lane.lane);
+    for (const idx of hits) {
+      const rec = recordByIdx.get(idx);
+      nodes.push({
+        lane: lane.lane,
+        sha: store.sha[idx],
+        short: store.short(idx),
+        ts: ts[idx],
+        author: store.author[idx],
+        subject: store.subject[idx],
+        kind: 'version',
+        n: numbers?.get(idx) ?? null,
+        status: statusText(rec?.changes ?? []),
+        x: 0,
+        labels: [],
+        via: null,
+      });
+      bump(ts[idx]);
+    }
+  }
+
+  for (const point of points) {
+    const m = point.merge;
+    const primary = point.sources[0] ?? null;
+    nodes.push({
+      lane: point.lane.lane,
+      sha: store.sha[m],
+      short: store.short(m),
+      ts: ts[m],
+      author: store.author[m],
+      subject: store.subject[m],
+      kind: 'merge',
+      n: null,
+      status: statusText(recordByIdx.get(m)?.changes ?? []),
+      x: 0,
+      labels: [],
+      via:
+        primary === null
+          ? null
+          : {
+              lane: primary.lane.lane,
+              name: primary.lane.name,
+              sha: primary.sha,
+              short: primary.sha.slice(0, 8),
+              kind: primary.kind,
+              n: primary.n,
+            },
+    });
+  }
+  nodes.sort((a, b) => a.lane - b.lane || a.ts - b.ts || (a.sha < b.sha ? -1 : a.sha > b.sha ? 1 : 0));
+
+  // -- 边：合并箭头 + 分叉线 -----------------------------------------
+  interface RawEdge {
+    edge: EdgePayload;
+    x1Ts: number;
+    x2Ts: number;
+  }
+
+  const rawEdges: RawEdge[] = [];
+  const seenEdges = new Set<string>();
+
+  for (const point of points) {
+    const mergeSha = store.sha[point.merge];
+    const target: TargetNode = {
+      lane: point.lane.lane,
+      sha: mergeSha,
+      short: store.short(point.merge),
+      kind: 'merge',
+      ts: ts[point.merge],
+      n: null,
+    };
+    for (const source of point.sources) {
+      const key = `merge|${source.lane.lane}|${point.lane.lane}|${source.sha}|${mergeSha}`;
+      if (seenEdges.has(key)) continue;
+      seenEdges.add(key);
+      rawEdges.push({
+        x1Ts: source.ts,
+        x2Ts: ts[point.merge],
+        edge: {
+          kind: 'merge',
+          fromLane: source.lane.lane,
+          toLane: point.lane.lane,
+          fromSha: source.sha,
+          fromKind: source.kind,
+          fromN: source.n,
+          sha: mergeSha,
+          short: store.short(point.merge),
+          subject: store.subject[point.merge],
+          author: store.author[point.merge],
+          x1: 0,
+          x2: 0,
+          targetNode: target,
+        },
+      });
+    }
+  }
+
+  // 分叉线：每条轨道一根，从它父分支的轨道拉过来，画在分支点那一行。
+  // 以前是"每个版本 × 每条继承它的轨道"各拉一根，图上一半的线都是这么来的。
+  const laneByName = new Map(contributing.map((lane) => [lane.name, lane]));
+  for (const lane of contributing) {
+    if (lane.fork === null || !lane.parentName) continue;
+    const parent = laneByName.get(lane.parentName);
+    if (parent === undefined || parent.lane === lane.lane) continue;
+    const key = `fork|${parent.lane}|${lane.lane}|${store.sha[lane.fork]}`;
+    if (seenEdges.has(key)) continue;
+    seenEdges.add(key);
+    rawEdges.push({
+      x1Ts: ts[lane.fork],
+      x2Ts: ts[lane.fork],
+      edge: {
+        kind: 'fork',
+        fromLane: parent.lane,
+        toLane: lane.lane,
+        fromSha: store.sha[lane.fork],
+        fromKind: 'fork',
+        fromN: null,
+        sha: store.sha[lane.fork],
+        short: store.short(lane.fork),
+        subject: store.subject[lane.fork],
+        author: store.author[lane.fork],
+        x1: 0,
+        x2: 0,
+        targetNode: null,
+      },
+    });
+  }
 
   // -- tag 当 label --------------------------------------------------
   const labelsBySha = new Map<string, string[]>();
@@ -449,11 +693,12 @@ export function buildFileGraph(
   }
 
   // -- 轨道 payload --------------------------------------------------
-  const versionsByLane = new Map<number, VersionPayload[]>();
   const lanePayload: LanePayload[] = [];
+  /** 轨道上下端（原始时间戳）：含版本节点和合并节点，最后统一归一化。 */
+  const laneTrack = new Map<number, { start: number; end: number }>();
 
   for (const lane of contributing) {
-    const hits = [...new Set(lane.hits)].sort((a, b) => ts[a] - ts[b]);
+    const hits = hitsByLane.get(lane.lane) ?? [];
     const isAuthor = lane.hits.length > 0;
 
     const firstTs = hits.length ? ts[hits[0]] : minOr(store, lane.carrierHits, lane.tipTs);
@@ -480,7 +725,15 @@ export function buildFileGraph(
         x: 0,
       };
     });
-    versionsByLane.set(lane.lane, versions);
+
+    // 轨道画到哪：自己的版本节点 + 合并节点，都算在这条轨道的故事里。
+    // （都没有时退回“分叉点 → 把改动带进来的那次合并”这段范围。）
+    const mergeStamps = (mergePointsFor.get(lane.lane) ?? []).map((p) => ts[p.merge]);
+    const stamps = [...versions.map((v) => v.ts), ...mergeStamps];
+    laneTrack.set(lane.lane, {
+      start: stamps.length ? Math.min(...stamps) : startTs,
+      end: stamps.length ? Math.max(...stamps) : endTs,
+    });
 
     lanePayload.push({
       name: lane.name,
@@ -490,6 +743,7 @@ export function buildFileGraph(
       remote: lane.remote,
       role: isAuthor ? 'author' : 'carrier',
       versions,
+      mergeCount: mergeStamps.length,
       tip: lane.tip !== null ? store.sha[lane.tip] : null,
       tipShort: lane.tip !== null ? store.short(lane.tip) : null,
       tipTs: lane.tipTs,
@@ -517,24 +771,6 @@ export function buildFileGraph(
     maxTs = only;
   }
 
-  // -- 合并箭头落在哪：那次合并之后目标分支上的第一个版本 -------------
-  for (const edge of edges) {
-    edge.targetVersion = null;
-    if (edge.kind !== 'merge') continue;
-    for (const version of versionsByLane.get(edge.toLane) ?? []) {
-      if (version.ts >= edge.ts) {
-        edge.targetVersion = {
-          lane: edge.toLane,
-          sha: version.sha,
-          short: version.short,
-          n: version.n,
-          ts: version.ts,
-        };
-        break;
-      }
-    }
-  }
-
   const span = Math.max(1, (maxTs ?? 0) - (minTs ?? 0));
   const base = minTs ?? 0;
   const norm = (value: number | null | undefined): number => {
@@ -547,38 +783,24 @@ export function buildFileGraph(
     node.labels = [...(labelsBySha.get(node.sha) ?? [])].sort();
   }
 
-  const deduped: EdgePayload[] = [];
-  const seenEdges = new Set<string>();
-  for (const e of edgeMap.values()) {
-    const x1 = norm(e.fromTs);
-    const x2 = norm(e.ts);
-    const key = `${e.kind}|${e.fromLane}|${e.toLane}|${e.sha}|${x1}`;
-    if (seenEdges.has(key)) continue;
-    seenEdges.add(key);
-    deduped.push({
-      kind: e.kind,
-      fromLane: e.fromLane,
-      toLane: e.toLane,
-      sha: e.sha,
-      short: e.short,
-      subject: e.subject,
-      author: e.author,
-      x1,
-      x2,
-      targetVersion: e.targetVersion,
-    });
-  }
+  // 边：同时算好归一化后的两端，以及"合并节点落在哪个版本之前"的源端信息
+  const edges: EdgePayload[] = rawEdges.map((item) => ({
+    ...item.edge,
+    x1: norm(item.x1Ts),
+    x2: norm(item.x2Ts),
+  }));
 
   for (const payload of lanePayload) {
-    payload.x1 = norm(payload.startTs);
-    payload.x2 = norm(payload.tipTs);
+    const track = laneTrack.get(payload.lane) ?? { start: payload.startTs, end: payload.startTs };
+    payload.x1 = norm(track.start);
+    payload.x2 = norm(Math.max(track.start, track.end));
     payload.forkX = payload.forkTs ? norm(payload.forkTs) : null;
     for (const version of payload.versions) version.x = norm(version.ts);
   }
 
   // -- 提交表 --------------------------------------------------------
   const promotionBySha = new Map<string, unknown[]>();
-  for (const e of deduped) {
+  for (const e of edges) {
     const list = promotionBySha.get(e.sha) ?? [];
     list.push({
       kind: e.kind,
@@ -591,6 +813,7 @@ export function buildFileGraph(
   }
 
   const originCache = new Map<number, string | null>();
+  const fixedLaneNames = new Set(allLanes.filter((l) => l.kind === 'fixed').map((l) => l.name));
   const commitRows: CommitRowPayload[] = [];
   for (const rec of records.slice().sort((a, b) => b.ts - a.ts)) {
     const idx = store.get(rec.sha);
@@ -598,8 +821,8 @@ export function buildFileGraph(
       .filter((lane) => idx !== undefined && lane.reach.has(idx))
       .map((lane) => lane.name)
       .sort((a, b) => {
-        const fa = fixedNames.includes(a) ? 0 : 1;
-        const fb = fixedNames.includes(b) ? 0 : 1;
+        const fa = fixedLaneNames.has(a) ? 0 : 1;
+        const fb = fixedLaneNames.has(b) ? 0 : 1;
         if (fa !== fb) return fa - fb;
         return a < b ? -1 : a > b ? 1 : 0;
       });
@@ -637,10 +860,11 @@ export function buildFileGraph(
 
   return {
     path: filePath,
+    scope,
     follow,
     lanes: lanePayload,
     nodes,
-    edges: deduped,
+    edges,
     commits: commitRows,
     range: { minTs: base, maxTs: maxTs ?? base },
     warnings,
@@ -649,6 +873,8 @@ export function buildFileGraph(
       lanes: lanePayload.length,
       tags: tagCount,
       branches: branchSet.size,
+      versions: lanePayload.reduce((sum, lane) => sum + lane.versions.length, 0),
+      merges: points.length,
     },
   };
 }

@@ -9,6 +9,7 @@
 
 import * as vscode from 'vscode';
 import { FileGraphPayload } from './filegraph';
+import { BranchScope } from './repo';
 
 export interface PanelState {
   /** 仓库根目录（绝对路径）。 */
@@ -16,6 +17,8 @@ export interface PanelState {
   /** 仓库相对路径，'/' 分隔。 */
   filePath: string;
   follow: boolean;
+  /** 看哪些分支：本地 / 远端 / 全部。 */
+  scope: BranchScope;
 }
 
 export interface PanelHost {
@@ -24,6 +27,8 @@ export interface PanelHost {
   /** 丢掉这个仓库的缓存（用户点了「刷新」）。 */
   invalidate(state: PanelState): void;
   openDiff(sha: string, state: PanelState): Promise<void>;
+  /** 把面板里改的开关记在本会话里，下次打开还是这个值。 */
+  remember(prefs: { scope?: BranchScope; follow?: boolean }): void;
   toast(text: string): void;
 }
 
@@ -139,14 +144,33 @@ export class VersionTreePanel {
         break;
       case 'setFollow':
         this.state = { ...this.state, follow: Boolean(msg.value) };
+        this.host.remember({ follow: this.state.follow });
         this.host.invalidate(this.state);
         this.requestReload();
         break;
-      case 'openDiff':
-        await this.host.openDiff(String(msg.sha ?? ''), this.state);
+      case 'setScope': {
+        const scope = readScope(msg.value);
+        if (scope !== this.state.scope) {
+          this.state = { ...this.state, scope };
+          this.host.remember({ scope });
+          this.host.invalidate(this.state);
+          this.requestReload();
+        }
         break;
+      }
+      case 'openDiff': {
+        // 合并节点上按住 Alt 点 = 看改动源头那个版本，否则看本分支的合并前后对比
+        const alt = Boolean(msg.alt);
+        const altSha = typeof msg.altSha === 'string' ? msg.altSha : '';
+        const sha = alt && altSha ? altSha : String(msg.sha ?? '');
+        if (sha) await this.host.openDiff(sha, this.state);
+        break;
+      }
       case 'saveSvg':
         await this.saveSvg(String(msg.xml ?? ''));
+        break;
+      case 'copy':
+        await vscode.env.clipboard.writeText(String(msg.text ?? ''));
         break;
       case 'toast':
         this.host.toast(String(msg.text ?? ''));
@@ -211,6 +235,11 @@ export class VersionTreePanel {
   <span class="path" id="filePath">${escapeHtml(this.state.filePath)}</span>
   <span class="spacer"></span>
   <span id="stats"></span>
+  <span class="seg" id="scopeSeg" title="看哪些分支">
+    <button type="button" data-scope="local">本地</button>
+    <button type="button" data-scope="remote">远程</button>
+    <button type="button" data-scope="all">全部</button>
+  </span>
   <label><input type="checkbox" id="optFollow" /> 跟随重命名</label>
   <button id="refreshBtn" title="丢掉缓存重新读取">刷新</button>
   <button id="exportBtn" title="把当前视图导出成 SVG">导出 SVG</button>
@@ -230,4 +259,9 @@ function escapeHtml(text: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+/** webview 那边可能传来任何东西，夹成合法范围。 */
+function readScope(value: unknown): BranchScope {
+  return value === 'remote' || value === 'all' ? value : 'local';
 }

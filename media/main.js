@@ -18,6 +18,7 @@
   var statsEl = document.getElementById('stats');
   var pathEl = document.getElementById('filePath');
   var followEl = document.getElementById('optFollow');
+  var scopeEl = document.getElementById('scopeSeg');
   var renderer = null;
 
   function initRenderer() {
@@ -25,13 +26,21 @@
       // 版本树下 style 用不上——_vstyle() 会因为 fileStyle==='tree' 走 'version-tree'
       style: 'lanes',
       fileStyle: 'tree',
-      onNodeClick: function (node) {
-        vscode.postMessage({ type: 'openDiff', sha: node.sha });
+      onNodeClick: function (node, lane, ev) {
+        // 合并节点：默认看本分支上合并前后的对比；Alt+点看来源那个版本
+        var alt = !!(ev && (ev.altKey || ev.metaKey || ev.ctrlKey));
+        var altSha = node.via ? node.via.sha : '';
+        vscode.postMessage({ type: 'openDiff', sha: node.sha, alt: alt, altSha: altSha });
+      },
+      onCopy: function (text) {
+        // webview 里的 navigator.clipboard 不保证可用，统一交给扩展写剪贴板
+        vscode.postMessage({ type: 'copy', text: text });
       },
       onLaneClick: function (lane) {
         vscode.postMessage({
           type: 'toast',
           text: lane.name + '：' + lane.ownCount + ' 个版本，' +
+            (lane.mergeCount ? lane.mergeCount + ' 次合并，' : '') +
             (lane.role === 'carrier' ? '仅承载改动' : '改动来源')
         });
       }
@@ -39,6 +48,14 @@
     window.addEventListener('resize', function () {
       if (renderer) renderer.resize();
     });
+  }
+
+  function markScope(scope) {
+    var buttons = scopeEl.getElementsByTagName('button');
+    for (var i = 0; i < buttons.length; i++) {
+      var on = buttons[i].getAttribute('data-scope') === scope;
+      buttons[i].className = on ? 'active' : '';
+    }
   }
 
   function renderWarnings(list) {
@@ -55,7 +72,7 @@
     var s = payload.stats || {};
     var parts = [
       payload.lanes.length + ' 条轨道',
-      (s.commits || 0) + ' 次改动'
+      (s.merges || 0) + ' 次合并'
     ];
     if (s.tags) parts.push(s.tags + ' 个标签');
     if (s.branches) parts.push(s.branches + ' 个分支');
@@ -68,6 +85,7 @@
       pathEl.textContent = msg.payload.path;
       pathEl.title = msg.payload.path;
       followEl.checked = !!msg.payload.follow;
+      markScope(msg.payload.scope || 'local');
       renderWarnings(msg.payload.warnings);
       renderStats(msg.payload);
       renderer.setData(msg.payload, 'file');
@@ -86,6 +104,15 @@
 
   followEl.addEventListener('change', function () {
     vscode.postMessage({ type: 'setFollow', value: !!followEl.checked });
+  });
+
+  scopeEl.addEventListener('click', function (event) {
+    var target = event.target;
+    if (!target || !target.getAttribute) return;
+    var scope = target.getAttribute('data-scope');
+    if (!scope) return;
+    markScope(scope);
+    vscode.postMessage({ type: 'setScope', value: scope });
   });
 
   document.getElementById('exportBtn').addEventListener('click', function () {

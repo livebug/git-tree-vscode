@@ -259,11 +259,14 @@ test('规则7：传播边要求改动是从非第一父"带进来"的', () => {
   const to = payload.lanes.find((l) => l.lane === edge.toLane);
   assert.equal(from?.name, 'fb-b');
   assert.equal(to?.name, 'uat');
-  assert.equal(
-    edge.targetVersion,
-    null,
-    'uat 自己没改过这个文件，箭头应该落在空心圈上（targetVersion 为 null）',
-  );
+  assert.equal(edge.fromKind, 'version', '源头是 fb-b 的版本节点');
+
+  // uat 自己没改过这个文件，箭头就落在 uat 上的**合并节点**（那次把改动带进来的合并），
+  // 点它就是 `git diff <合并提交>^1 <合并提交> -- src/pay.js`，即 uat 上的前后对比。
+  assert.equal(edge.targetNode?.kind, 'merge');
+  const node = payload.nodes.find((n) => n.sha === edge.targetNode?.sha);
+  assert.equal(node?.kind, 'merge');
+  assert.equal(node?.lane, to?.lane);
 });
 
 test('规则7：提交表里的 origin / containing 与轨道一致', () => {
@@ -293,7 +296,8 @@ test('契约：payload 的字段够渲染器画出版本树', () => {
   // CONTRACT.md 里冻结的形状——_drawLanesVT / _drawEdgesVT / _drawNodesVT 直接读这些键
   assert.equal(payload.path, 'src/pay.js');
   assert.ok(payload.range.maxTs >= payload.range.minTs);
-  assert.equal(payload.nodes.length, 1);
+  assert.equal(payload.nodes.filter((n) => n.kind === 'version').length, 1, '一个版本节点');
+  assert.equal(payload.nodes.filter((n) => n.kind === 'merge').length, 1, '一个合并节点');
 
   for (const item of payload.lanes) {
     assert.equal(typeof item.color, 'string');

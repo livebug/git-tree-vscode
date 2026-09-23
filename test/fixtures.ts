@@ -91,6 +91,25 @@ export function tempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+/** 直接用 git 操作一个已存在的仓库（不重跑 init）。 */
+export function runGit(dir: string, ...args: string[]): string {
+  const res = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', windowsHide: true });
+  if (res.status !== 0) {
+    throw new Error(`git ${args.join(' ')} 失败: ${res.stderr || res.stdout}`);
+  }
+  return (res.stdout ?? '').trim();
+}
+
+/**
+ * 造一根远端跟踪分支。
+ *
+ * 不需要真的有个远端仓库：`refs/remotes/*` 就是普通 ref，update-ref 写进去
+ * 就能测“只看远程”这类分支范围——比搭一个裸仓库快得多。
+ */
+export function addRemoteBranch(dir: string, name: string, rev: string): void {
+  runGit(dir, 'update-ref', `refs/remotes/${name}`, rev);
+}
+
 /**
  * 小仓库：master → dev → uat → release 的基线，加三个功能分支和一个冲突分支。
  *

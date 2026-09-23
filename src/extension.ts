@@ -12,10 +12,18 @@ import { resolveFixed } from './fixed';
 import { FileGraphPayload, buildFileGraph } from './filegraph';
 import { Git } from './git';
 import { PanelHost, PanelState, VersionTreePanel } from './panel';
-import { RepoHandle } from './repo';
+import { BranchScope, RepoHandle, selectRefs } from './repo';
 
 /** `git log --name-status -- <path>` 的上限。单文件历史一般远小于整个 DAG。 */
 const FILE_HISTORY_LIMIT = 4000;
+
+/**
+ * 面板里改过的开关，记在会话里。
+ *
+ * 每次右键打开都用设置里的初始值会很烦：用户刚切成“远程”，换个文件看又回去了。
+ */
+let sessionScope: BranchScope | null = null;
+let sessionFollow: boolean | null = null;
 
 interface CacheEntry {
   handle: RepoHandle;
@@ -74,12 +82,21 @@ async function showVersionTree(
     return;
   }
 
-  const state: PanelState = { repoRoot, filePath, follow: cfg.follow };
+  const state: PanelState = {
+    repoRoot,
+    filePath,
+    follow: sessionFollow ?? cfg.follow,
+    scope: sessionScope ?? cfg.branchScope,
+  };
 
   const host: PanelHost = {
     load: (s) => loadPayload(s),
     invalidate: (s) => invalidateRepo(s),
     openDiff: (sha, s) => openCommitDiff(s.repoRoot, s.filePath, sha, cfg.gitPath),
+    remember: (prefs) => {
+      if (prefs.scope !== undefined) sessionScope = prefs.scope;
+      if (prefs.follow !== undefined) sessionFollow = prefs.follow;
+    },
     toast: (text) => {
       void vscode.window.setStatusBarMessage(text, 4000);
     },
@@ -129,13 +146,23 @@ async function loadPayload(state: PanelState): Promise<FileGraphPayload> {
   const { fixed, source } = resolveFixed(cfg.fixedBranches, handle.refs(), info.head, {
     prefixes: cfg.fixedPrefixes,
     auto: cfg.autoFixed,
+    scope: state.scope,
   });
 
   const payload = buildFileGraph(handle, state.filePath, fixed, {
-    includeRemotes: cfg.includeRemotes,
+    scope: state.scope,
     follow: state.follow,
     maxCommits: FILE_HISTORY_LIMIT,
   });
+
+  // 只看远程时，本地没 fetch 过就真的一条分支都没有——这个坑要说出来
+  if (state.scope !== 'local' && !selectRefs(handle.refs(), state.scope).length) {
+    payload.warnings.push(
+      state.scope === 'remote'
+        ? '这个仓库里没有远端分支（先 git fetch 再看）。'
+        : '没有可用的分支。',
+    );
+  }
 
   // 固定分支缺失是这套图**最常见的坏结果**：没有它就没有"承载轨道"，
   // 改动往上传播的路径整片消失。所以这里必须说出来，别让用户以为这文件就这么简单。
@@ -210,7 +237,7 @@ interface Settings {
   autoFixed: boolean;
   fixedPrefixes: string[];
   maxCommits: number;
-  includeRemotes: boolean;
+  branchScope: BranchScope;
   follow: boolean;
   gitPath: string;
 }
@@ -222,8 +249,22 @@ function readSettings(): Settings {
     autoFixed: cfg.get<boolean>('autoFixed') ?? true,
     fixedPrefixes: cfg.get<string[]>('fixedPrefixes') ?? [],
     maxCommits: cfg.get<number>('maxCommits') ?? 40000,
-    includeRemotes: cfg.get<boolean>('includeRemotes') ?? false,
+    branchScope: readScope(cfg),
     follow: cfg.get<boolean>('follow') ?? false,
     gitPath: cfg.get<string>('gitPath') || 'git',
   };
+}
+
+/**
+ * 分支范围。
+ *
+ * `gitTree.includeRemotes` 是旧设置项，留着兼容：它还开着（而且没显式改过 branchScope）
+ * 就等于 `all`，免得升级之后别人发现远端分支“不见了”。
+ */
+function readScope(cfg: vscode.WorkspaceConfiguration): BranchScope {
+  const value = cfg.get<string>('branchScope') ?? 'local';
+  const scope: BranchScope =
+    value === 'remote' || value === 'all' ? value : 'local';
+  if (scope === 'local' && (cfg.get<boolean>('includeRemotes') ?? false)) return 'all';
+  return scope;
 }

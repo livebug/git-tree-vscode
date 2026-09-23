@@ -46,6 +46,40 @@ export interface RepoInfo {
   branchCount: number;
 }
 
+/**
+ * 看哪些分支：只看本地、只看远端，还是都看。
+ *
+ * `remote` 是给"我只关心远端仓库上有什么"准备的——本地可能只是一个陈旧的镜像。
+ */
+export type BranchScope = 'local' | 'remote' | 'all';
+
+/** `origin/dev` → `dev`；不带 `/` 的名字原样返回。 */
+export function branchPart(name: string): string {
+  const cut = name.indexOf('/');
+  return cut < 0 ? name : name.slice(cut + 1);
+}
+
+/**
+ * 按范围挑 refs。
+ *
+ * `all` 会去掉"远端的本地镜像"：本地有 `dev`、远端也有 `origin/dev` 时只留一份，
+ * 否则同一条分支会画成两根并排的轨道，反而更难读。远端独有的分支（本地不存在同名分支）
+ * 仍然会出现。
+ */
+export function selectRefs(refs: readonly RefInfo[], scope: BranchScope): RefInfo[] {
+  if (scope === 'local') return refs.filter((r) => !r.remote);
+  if (scope === 'remote') return refs.filter((r) => r.remote);
+  const localNames = new Set(refs.filter((r) => !r.remote).map((r) => r.name));
+  const out = refs.filter((r) => !r.remote);
+  for (const ref of refs) {
+    if (!ref.remote) continue;
+    const part = branchPart(ref.name);
+    if (part && localNames.has(part)) continue;
+    out.push(ref);
+  }
+  return out;
+}
+
 /** 习惯上算"长期分支"的名字——只用来做默认建议。 */
 export const DEFAULT_FIXED = [
   'master',

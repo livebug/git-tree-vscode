@@ -68,6 +68,34 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* 分支范围切换：本地 / 远程 / 全部 */
+#bar .seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+#bar .seg button {
+  border-radius: 0;
+  padding: 3px 9px;
+  background: transparent;
+  color: var(--fg-muted);
+}
+
+#bar .seg button + button {
+  border-left: 1px solid var(--border);
+}
+
+#bar .seg button:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.18));
+}
+
+#bar .seg button.active {
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #ffffff);
+}
+
 .warnings {
   flex: 0 0 auto;
   margin: 0;
