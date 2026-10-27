@@ -3,18 +3,39 @@
 VS Code 插件：在资源管理器里**右键一个文件 → 查看版本树**，用 ClearCase 的版本树视角
 看这个文件的改动历史。
 
-```
-/master      /dev              /release            ← 一条轨道 = 一个分支
-   │            ●1 拆分鉴权       ●1 初始版本  [LBL_BASE]
-   │             │  ◇←fb-a        │
-   │             ●2 增加限流       ●2 修安全头  [LBL_REL1]
-   │             ↑┈┈┈┈┈虚线箭头┈┈┈┈┈┈╯
-   ○┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈╯   （○ = 该分支只是继承了这个改动，自己没改过）
+> **环境要求**：VS Code **1.70 及以上**。最低支持 1.70 是为了兼容 Windows 7 / 8 / 8.1
+> （1.70.3 是这条线上最后能跑的构建）；更高版本的 VS Code 不受影响。
+> 编译用到的 `@types/vscode` 钉在 1.70，所以不小心用了新 API 会在 `npm run compile` 阶段报错。
+
+一条竖线 = 一个分支，从上往下是这个文件在该分支上的版本，双圈是合并节点：
+
+```mermaid
+%%{init: { "gitGraph": { "mainBranchName": "master" } }}%%
+gitGraph TB:
+    commit id: "1 初始版本" tag: "LBL_BASE"
+    branch release
+    commit id: "2 修安全头" tag: "LBL_REL1"
+    branch dev
+    commit id: "1 拆分鉴权"
+    branch fb-a
+    commit id: "fb-a/1"
+    checkout dev
+    merge fb-a id: "◇ 合并 fb-a"
+    commit id: "2 增加限流"
+    checkout release
+    merge dev id: "往上传播"
+    checkout master
+    merge release id: "继承"
 ```
 
-- 方块里的数字是版本号（ClearCase 语义：`/<分支名>/<n>`）
-- 琥珀色小标签是 git tag（对应 ClearCase 的 `LBL_*`）
-- **菱形 = 合并节点**：把别的分支的改动带进本分支的那次合并。点它 = 看本分支上这个文件
+> mermaid 的 gitGraph 要求第一个提交落在主干上，所以「初始版本」画在 master 这一列；
+> 面板里 master 轨道只有一个继承节点（○）——这条分支从没自己改过这个文件。
+
+面板里的符号和上图一一对应，只是形状不同：
+
+- 方块 = 该分支上的版本号（ClearCase 语义：`/<分支名>/<n>`）
+- 琥珀色小标签 = git tag（对应 ClearCase 的 `LBL_*`）
+- **菱形 = 合并节点**（上图里是双圈）：把别的分支的改动带进本分支的那次合并。点它 = 看本分支上这个文件
   合并前 / 合并后的对比（`git diff <合并提交>^1 <合并提交> -- <文件>`）；
   按住 **Alt 点** = 去看改动源头那个版本自己的改动
 - 虚线箭头 = 改动往上走的一跳，**只连相邻两条轨道**（`fb → uat → release → master`
@@ -73,13 +94,13 @@ npm test             # 纯 Node，不需要 Python，不需要下载 Electron
 
 ```bash
 npm install
-npm run vsix                # → git-tree-vscode-0.1.0.vsix
+npm run vsix                # → git-tree-vscode-0.2.3.vsix
 ```
 
 内网机器（不需要网络、不需要 npm）：
 
 ```bash
-code --install-extension git-tree-vscode-0.1.0.vsix
+code --install-extension git-tree-vscode-0.2.3.vsix
 ```
 
 也可以直接在扩展面板右上角「…」→「从 VSIX 安装」。
