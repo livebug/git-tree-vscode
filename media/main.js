@@ -18,6 +18,7 @@
   var statsEl = document.getElementById('stats');
   var pathEl = document.getElementById('filePath');
   var followEl = document.getElementById('optFollow');
+  var tagsEl = document.getElementById('optTags');
   var scopeEl = document.getElementById('scopeSeg');
   var renderer = null;
 
@@ -91,6 +92,10 @@
       renderer.setData(msg.payload, 'file');
       // 面板刚建出来时 svg 可能还没拿到尺寸，下一帧再 resize 一次
       requestAnimationFrame(function () { renderer.resize(); });
+    } else if (msg.type === 'showTags') {
+      // 默认关：标签多了会压到相邻轨道，只留右上角的小琥珀点
+      tagsEl.checked = !!msg.value;
+      renderer.setShowTags(!!msg.value);
     } else if (msg.type === 'error') {
       renderWarnings([msg.message]);
     } else if (msg.type === 'busy') {
@@ -104,6 +109,10 @@
 
   followEl.addEventListener('change', function () {
     vscode.postMessage({ type: 'setFollow', value: !!followEl.checked });
+  });
+
+  tagsEl.addEventListener('change', function () {
+    vscode.postMessage({ type: 'setShowTags', value: !!tagsEl.checked });
   });
 
   scopeEl.addEventListener('click', function (event) {

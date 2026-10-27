@@ -24,6 +24,7 @@ const FILE_HISTORY_LIMIT = 4000;
  */
 let sessionScope: BranchScope | null = null;
 let sessionFollow: boolean | null = null;
+let sessionShowTags: boolean | null = null;
 
 interface CacheEntry {
   handle: RepoHandle;
@@ -87,6 +88,7 @@ async function showVersionTree(
     filePath,
     follow: sessionFollow ?? cfg.follow,
     scope: sessionScope ?? cfg.branchScope,
+    showTags: sessionShowTags ?? cfg.showTags,
   };
 
   const host: PanelHost = {
@@ -96,6 +98,7 @@ async function showVersionTree(
     remember: (prefs) => {
       if (prefs.scope !== undefined) sessionScope = prefs.scope;
       if (prefs.follow !== undefined) sessionFollow = prefs.follow;
+      if (prefs.showTags !== undefined) sessionShowTags = prefs.showTags;
     },
     toast: (text) => {
       void vscode.window.setStatusBarMessage(text, 4000);
@@ -239,6 +242,7 @@ interface Settings {
   maxCommits: number;
   branchScope: BranchScope;
   follow: boolean;
+  showTags: boolean;
   gitPath: string;
 }
 
@@ -251,6 +255,7 @@ function readSettings(): Settings {
     maxCommits: cfg.get<number>('maxCommits') ?? 40000,
     branchScope: readScope(cfg),
     follow: cfg.get<boolean>('follow') ?? false,
+    showTags: cfg.get<boolean>('showTags') ?? false,
     gitPath: cfg.get<string>('gitPath') || 'git',
   };
 }

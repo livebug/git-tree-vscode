@@ -155,6 +155,9 @@
     this.showAxis = true;
     this.showLabels = true;
     this.showSubjects = true;
+    // 版本树上的 git tag：默认不画。标签一多就会从节点左侧一路铺开，
+    // 压到相邻轨道的提交说明上；完整列表始终在悬停信息框里。
+    this.showTags = !!this.options.showTags;
     this.style = STYLES.indexOf(this.options.style) >= 0 ? this.options.style : DEFAULT_STYLE;
     this.fileStyle = this.options.fileStyle === 'tree' ? 'tree' : 'lanes';
     this.theme = readTheme();
@@ -596,6 +599,10 @@
 
   Renderer.prototype.setShowAxis = function (on) { this.showAxis = !!on; this._drawAxis(); };
   Renderer.prototype.setShowLabels = function (on) { this.showLabels = !!on; this._drawLabels(); };
+  Renderer.prototype.setShowTags = function (on) {
+    this.showTags = !!on;
+    if (this.payload && this._vstyle() === 'version-tree') this._drawNodesVT();
+  };
 
   // ------------------------------------------------------------------
   // main render
@@ -1272,11 +1279,19 @@
         // git tags play the role of ClearCase version labels: LBL_xxx
         var labels = (version && version.labels && version.labels.length)
           ? version.labels : (n.labels || []);
-        var chipX = x - VT_BOX / 2 - 6;
-        for (var li = labels.length - 1; li >= 0; li--) {
-          var chipText = truncateToWidth(labels[li], chipFont, 96);
+        if (labels.length && !self.showTags) {
+          // 默认不画：标签一多就从节点左侧一路铺开，压到相邻轨道的提交说明上。
+          // 只在方块右上角点一个琥珀色小点，保留“这个版本有标签”的可发现性。
+          g.appendChild(el('circle', {
+            cx: x + VT_BOX / 2 - 3, cy: y - VT_BOX / 2 + 3, r: 3,
+            fill: '#e2a336', stroke: self.theme.plotBg, 'stroke-width': 1
+          }));
+        } else if (labels.length) {
+          // 打开后也只画一片，其余折叠成 +N，别让它再长成一条链
+          var extra = labels.length - 1;
+          var chipText = truncateToWidth(labels[0], chipFont, 80) + (extra ? ' +' + extra : '');
           var cw = textWidth(chipText, chipFont) + 10;
-          chipX -= cw;
+          var chipX = x - VT_BOX / 2 - 6 - cw;
           g.appendChild(el('rect', {
             x: chipX, y: y - 8, width: cw, height: 16, rx: 3,
             fill: 'rgba(226,163,54,0.16)', stroke: '#e2a336', 'stroke-width': 1
@@ -1286,7 +1301,6 @@
           });
           ct.textContent = chipText;
           g.appendChild(ct);
-          chipX -= 4;
         }
 
         var text = n.subject || n.short;

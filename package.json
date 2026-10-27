@@ -2,7 +2,7 @@
   "name": "git-tree-vscode",
   "displayName": "git-tree 版本树",
   "description": "右键文件查看 ClearCase 风格的版本树：每条分支一条竖向轨道，版本编号、合并虚线箭头、tag 标签。",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "publisher": "git-tree",
   "license": "MIT",
   "repository": {
@@ -109,6 +109,11 @@
           "type": "boolean",
           "default": false,
           "description": "跟随文件重命名（git log --follow，只在单条线性历史上有效）。"
+        },
+        "gitTree.showTags": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "在版本节点左侧显示 git tag。标签多时会向左铺开、压到相邻轨道的提交说明上，所以默认关闭——关闭时只画一个琥珀色小点，完整标签列表在悬停信息框里；打开后每个节点最多显示一个标签（其余折叠成 `+N`）。"
         },
         "gitTree.gitPath": {
           "type": "string",

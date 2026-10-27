@@ -19,6 +19,8 @@ export interface PanelState {
   follow: boolean;
   /** 看哪些分支：本地 / 远端 / 全部。 */
   scope: BranchScope;
+  /** 版本节点左侧是否画 git tag（标签多了会压到相邻轨道，默认关）。 */
+  showTags: boolean;
 }
 
 export interface PanelHost {
@@ -28,7 +30,7 @@ export interface PanelHost {
   invalidate(state: PanelState): void;
   openDiff(sha: string, state: PanelState): Promise<void>;
   /** 把面板里改的开关记在本会话里，下次打开还是这个值。 */
-  remember(prefs: { scope?: BranchScope; follow?: boolean }): void;
+  remember(prefs: { scope?: BranchScope; follow?: boolean; showTags?: boolean }): void;
   toast(text: string): void;
 }
 
@@ -113,6 +115,7 @@ export class VersionTreePanel {
       const payload = await this.host.load(this.state);
       this.panel.title = `版本树 · ${this.state.filePath}`;
       await this.post({ type: 'payload', payload });
+      await this.post({ type: 'showTags', value: this.state.showTags });
     } catch (err) {
       await this.post({
         type: 'error',
@@ -148,6 +151,14 @@ export class VersionTreePanel {
         this.host.invalidate(this.state);
         this.requestReload();
         break;
+      case 'setShowTags': {
+        // 只是显示开关，不用重新读 git
+        const showTags = Boolean(msg.value);
+        this.state = { ...this.state, showTags };
+        this.host.remember({ showTags });
+        await this.post({ type: 'showTags', value: showTags });
+        break;
+      }
       case 'setScope': {
         const scope = readScope(msg.value);
         if (scope !== this.state.scope) {
@@ -241,6 +252,7 @@ export class VersionTreePanel {
     <button type="button" data-scope="all">全部</button>
   </span>
   <label><input type="checkbox" id="optFollow" /> 跟随重命名</label>
+  <label title="在版本节点左侧显示 git tag（标签多时会挤到相邻轨道；悬停信息里始终有完整列表）"><input type="checkbox" id="optTags" /> 标签</label>
   <button id="refreshBtn" title="丢掉缓存重新读取">刷新</button>
   <button id="exportBtn" title="把当前视图导出成 SVG">导出 SVG</button>
 </div>

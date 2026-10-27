@@ -34,7 +34,9 @@ gitGraph TB:
 面板里的符号和上图一一对应，只是形状不同：
 
 - 方块 = 该分支上的版本号（ClearCase 语义：`/<分支名>/<n>`）
-- 琥珀色小标签 = git tag（对应 ClearCase 的 `LBL_*`）
+- 琥珀色小标签 = git tag（对应 ClearCase 的 `LBL_*`）。**默认不画**——标签多了会从节点
+  左侧一路铺开、压到隔壁轨道的提交说明上。有标签的版本只在方块右上角点一个小琥珀点，
+  完整标签列表在悬停信息里；工具栏勾「标签」后每个节点显示一个标签，其余折叠成 `+N`
 - **菱形 = 合并节点**（上图里是双圈）：把别的分支的改动带进本分支的那次合并。点它 = 看本分支上这个文件
   合并前 / 合并后的对比（`git diff <合并提交>^1 <合并提交> -- <文件>`）；
   按住 **Alt 点** = 去看改动源头那个版本自己的改动
@@ -132,6 +134,7 @@ git push && git push origin v0.1.1
 | `gitTree.branchScope` | `local` | 看哪些分支：`local` / `remote` / `all`。面板右上角也能随时切（以面板上的选择为准）。 |
 | ~~`gitTree.includeRemotes`~~ | `false` | **已弃用**，改用 `gitTree.branchScope`。它开着等价于 `all`。 |
 | `gitTree.follow` | `false` | 跟随文件重命名（`git log --follow`）。 |
+| `gitTree.showTags` | `false` | 在版本节点左侧显示 git tag。默认关；打开后每个节点最多显示一个，其余折叠成 `+N`，完整列表始终在悬停信息里。 |
 | `gitTree.gitPath` | `git` | git 可执行文件路径。 |
 
 **固定分支一定要配对。** 没有固定分支就没有"承载轨道"——改动往上传播的路径会整片消失，
