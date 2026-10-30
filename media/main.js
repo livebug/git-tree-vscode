@@ -19,6 +19,7 @@
   var pathEl = document.getElementById('filePath');
   var followEl = document.getElementById('optFollow');
   var tagsEl = document.getElementById('optTags');
+  var branchBtn = document.getElementById('branchBtn');
   var scopeEl = document.getElementById('scopeSeg');
   var renderer = null;
 
@@ -96,6 +97,12 @@
       // 默认关：标签多了会压到相邻轨道，只留右上角的小琥珀点
       tagsEl.checked = !!msg.value;
       renderer.setShowTags(!!msg.value);
+    } else if (msg.type === 'branches') {
+      var n = msg.value ? msg.value.length : 0;
+      branchBtn.textContent = n ? '分支 ' + n : '分支';
+      branchBtn.title = n
+        ? '只显示选中的 ' + n + ' 条分支（点击重选）'
+        : '筛选要显示的分支（默认只显示固定分支）';
     } else if (msg.type === 'error') {
       renderWarnings([msg.message]);
     } else if (msg.type === 'busy') {
@@ -113,6 +120,10 @@
 
   tagsEl.addEventListener('change', function () {
     vscode.postMessage({ type: 'setShowTags', value: !!tagsEl.checked });
+  });
+
+  branchBtn.addEventListener('click', function () {
+    vscode.postMessage({ type: 'pickBranches' });
   });
 
   scopeEl.addEventListener('click', function (event) {

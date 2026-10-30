@@ -21,6 +21,8 @@ export interface PanelState {
   scope: BranchScope;
   /** 版本节点左侧是否画 git tag（标签多了会压到相邻轨道，默认关）。 */
   showTags: boolean;
+  /** 只看这些分支（短名，`dev` 也能匹配 `origin/dev`）；`null` = 全部。 */
+  branches: string[] | null;
 }
 
 export interface PanelHost {
@@ -29,8 +31,15 @@ export interface PanelHost {
   /** 丢掉这个仓库的缓存（用户点了「刷新」）。 */
   invalidate(state: PanelState): void;
   openDiff(sha: string, state: PanelState): Promise<void>;
+  /** 弹分支多选；`canceled` 时不动当前筛选。 */
+  pickBranches(state: PanelState): Promise<{ canceled: boolean; branches: string[] | null }>;
   /** 把面板里改的开关记在本会话里，下次打开还是这个值。 */
-  remember(prefs: { scope?: BranchScope; follow?: boolean; showTags?: boolean }): void;
+  remember(prefs: {
+    scope?: BranchScope;
+    follow?: boolean;
+    showTags?: boolean;
+    branches?: string[] | null;
+  }): void;
   toast(text: string): void;
 }
 
@@ -116,6 +125,7 @@ export class VersionTreePanel {
       this.panel.title = `版本树 · ${this.state.filePath}`;
       await this.post({ type: 'payload', payload });
       await this.post({ type: 'showTags', value: this.state.showTags });
+      await this.post({ type: 'branches', value: this.state.branches });
     } catch (err) {
       await this.post({
         type: 'error',
@@ -157,6 +167,14 @@ export class VersionTreePanel {
         this.state = { ...this.state, showTags };
         this.host.remember({ showTags });
         await this.post({ type: 'showTags', value: showTags });
+        break;
+      }
+      case 'pickBranches': {
+        const result = await this.host.pickBranches(this.state);
+        if (result.canceled) break;
+        this.state = { ...this.state, branches: result.branches };
+        this.host.remember({ branches: result.branches });
+        this.requestReload();
         break;
       }
       case 'setScope': {
@@ -251,6 +269,7 @@ export class VersionTreePanel {
     <button type="button" data-scope="remote">远程</button>
     <button type="button" data-scope="all">全部</button>
   </span>
+  <button id="branchBtn" title="筛选要显示的分支（默认只显示固定分支）">分支</button>
   <label><input type="checkbox" id="optFollow" /> 跟随重命名</label>
   <label title="在版本节点左侧显示 git tag（标签多时会挤到相邻轨道；悬停信息里始终有完整列表）"><input type="checkbox" id="optTags" /> 标签</label>
   <button id="refreshBtn" title="丢掉缓存重新读取">刷新</button>

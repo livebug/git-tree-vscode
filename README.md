@@ -64,6 +64,20 @@ gitGraph TB:
 
 固定分支的识别在三种范围下都成立：配置里写 `dev`，看远程时会自动匹配 `origin/dev`。
 
+## 筛选分支
+
+范围（本地 / 远程 / 全部）之上还能再按名字挑轨道：
+
+- **工具栏「分支」按钮**：弹出原生多选列表（可搜索），只画勾中的轨道；固定分支排在最前、
+  默认勾上。顶部「显示全部分支」一键清空筛选。选择记在本次会话里。
+- **默认只显示固定分支**：没配 `gitTree.branchFilter` 时，只画 `master` / `dev` / `uat` /
+  `release` 这些固定分支（自动识别的也算）；认不出固定分支时退回显示全部分支。
+- **配置默认值**：`gitTree.branchFilter` 收 glob（`release*`、`dev`、`origin/dev`），
+  打开面板时按它勾选。配了却一条都没匹配上会在面板顶部提示，并退回固定分支。
+
+筛掉的分支不会进轨道计算——谱系、传播箭头、承载轨道都按剩下的分支重算，不会留下断线；
+一个都不勾时保持原样（不会把图清成空白）。
+
 ## 与 git-tree 的关系
 
 **零耦合。** 本项目是一个独立仓库、独立的 npm 包，不引用 `git-tree` 的任何代码，
@@ -96,13 +110,13 @@ npm test             # 纯 Node，不需要 Python，不需要下载 Electron
 
 ```bash
 npm install
-npm run vsix                # → git-tree-vscode-0.2.3.vsix
+npm run vsix                # → git-tree-vscode-0.2.5.vsix
 ```
 
 内网机器（不需要网络、不需要 npm）：
 
 ```bash
-code --install-extension git-tree-vscode-0.2.3.vsix
+code --install-extension git-tree-vscode-0.2.5.vsix
 ```
 
 也可以直接在扩展面板右上角「…」→「从 VSIX 安装」。
@@ -132,6 +146,7 @@ git push && git push origin v0.1.1
 | `gitTree.fixedPrefixes` | `["release"]` | 自动识别时，以这些前缀开头的分支也算固定分支——这样 `release` 能认出 `release20260919`。 |
 | `gitTree.maxCommits` | `40000` | `git log --all` 的上限。 |
 | `gitTree.branchScope` | `local` | 看哪些分支：`local` / `remote` / `all`。面板右上角也能随时切（以面板上的选择为准）。 |
+| `gitTree.branchFilter` | `[]` | 默认只看哪些分支（glob，如 `["release*", "dev"]`）。留空 = 只看固定分支；面板「分支」按钮可临时改。 |
 | ~~`gitTree.includeRemotes`~~ | `false` | **已弃用**，改用 `gitTree.branchScope`。它开着等价于 `all`。 |
 | `gitTree.follow` | `false` | 跟随文件重命名（`git log --follow`）。 |
 | `gitTree.showTags` | `false` | 在版本节点左侧显示 git tag。默认关；打开后每个节点最多显示一个，其余折叠成 `+N`，完整列表始终在悬停信息里。 |

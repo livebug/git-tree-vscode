@@ -2,7 +2,7 @@
   "name": "git-tree-vscode",
   "displayName": "git-tree 版本树",
   "description": "右键文件查看 ClearCase 风格的版本树：每条分支一条竖向轨道，版本编号、合并虚线箭头、tag 标签。",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "publisher": "git-tree",
   "license": "MIT",
   "repository": {
@@ -98,6 +98,14 @@
           ],
           "default": "local",
           "markdownDescription": "版本树看哪些分支。面板右上角也能随时切换（以面板上的选择为准）。"
+        },
+        "gitTree.branchFilter": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "默认只看哪些分支（glob：`release*`、`dev`、`origin/dev` 都行）。留空 = 只看固定分支（`master` / `dev` / `uat` / `release` …）；匹配不到任何分支时退回固定分支。面板上的「分支」按钮可以临时改，以面板选择为准。"
         },
         "gitTree.includeRemotes": {
           "type": "boolean",

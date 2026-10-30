@@ -159,6 +159,11 @@ export interface FileGraphPayload {
 export interface FileGraphOptions {
   /** 看哪些分支：本地 / 远端 / 全部。默认本地。 */
   scope?: BranchScope;
+  /**
+   * 分支筛选：只画这些名字的轨道（`dev` / `origin/dev` 两种写法都认）。
+   * `null` / 省略 / 空数组 = 不筛。
+   */
+  branches?: readonly string[] | null;
   /** @deprecated 旧设置项，为 true 等价于 `scope: 'all'`。 */
   includeRemotes?: boolean;
   follow?: boolean;
@@ -181,9 +186,10 @@ export function buildLanes(
   repo: RepoHandle,
   fixedNames: readonly string[],
   scope: BranchScope = 'local',
+  names?: ReadonlySet<string>,
 ): LaneInfo[] {
   const store = repo.store();
-  const refs = selectRefs(repo.refs(), scope);
+  const refs = selectRefs(repo.refs(), scope, names);
   const byName = new Map(refs.map((r) => [r.name, r]));
 
   const allLanes: LaneInfo[] = [];
@@ -280,7 +286,12 @@ export function buildFileGraph(
     warnings.push('部分改动提交不在已加载的历史窗口内，已被忽略。');
   }
 
-  const allLanes = buildLanes(repo, fixedNames, scope);
+  const allLanes = buildLanes(
+    repo,
+    fixedNames,
+    scope,
+    options.branches && options.branches.length ? new Set(options.branches) : undefined,
+  );
 
   const fileIndices = [...recordByIdx.keys()].sort((a, b) => ts[a] - ts[b]);
   const fileSet = new Set(fileIndices);

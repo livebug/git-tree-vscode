@@ -65,19 +65,89 @@ export function branchPart(name: string): string {
  * `all` 会去掉"远端的本地镜像"：本地有 `dev`、远端也有 `origin/dev` 时只留一份，
  * 否则同一条分支会画成两根并排的轨道，反而更难读。远端独有的分支（本地不存在同名分支）
  * 仍然会出现。
+ *
+ * `names` 是可选的**分支筛选**：只保留名字（`dev` 或 `origin/dev` 两种写法都认）
+ * 在集合里的 ref。传 `undefined` 表示不筛。
  */
-export function selectRefs(refs: readonly RefInfo[], scope: BranchScope): RefInfo[] {
-  if (scope === 'local') return refs.filter((r) => !r.remote);
-  if (scope === 'remote') return refs.filter((r) => r.remote);
-  const localNames = new Set(refs.filter((r) => !r.remote).map((r) => r.name));
-  const out = refs.filter((r) => !r.remote);
+export function selectRefs(
+  refs: readonly RefInfo[],
+  scope: BranchScope,
+  names?: ReadonlySet<string>,
+): RefInfo[] {
+  let out: RefInfo[];
+  if (scope === 'local') {
+    out = refs.filter((r) => !r.remote);
+  } else if (scope === 'remote') {
+    out = refs.filter((r) => r.remote);
+  } else {
+    const localNames = new Set(refs.filter((r) => !r.remote).map((r) => r.name));
+    out = refs.filter((r) => !r.remote);
+    for (const ref of refs) {
+      if (!ref.remote) continue;
+      const part = branchPart(ref.name);
+      if (part && localNames.has(part)) continue;
+      out.push(ref);
+    }
+  }
+  if (!names) return out;
+  return out.filter((r) => names.has(r.name) || names.has(branchPart(r.name)));
+}
+
+/**
+ * 极简 glob：`*` 任意串、`?` 单字符，其余按字面量。
+ *
+ * 分支名里常见 `*`（`release*`），不想为这个引依赖；正则元字符全部转义，
+ * 大小写敏感（和 git 的 refname 一致）。
+ */
+export function globMatch(pattern: string, text: string): boolean {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  const source = escaped.replace(/\*/g, '.*').replace(/\?/g, '.');
+  return new RegExp(`^${source}$`).test(text);
+}
+
+/**
+ * 用 glob 模式挑分支，返回**短名**（`origin/dev` → `dev`）并去重。
+ *
+ * 短名是为了跨 scope 稳定：用户今天看本地、明天看远程，`dev` 这个筛选条件
+ * 在 `local` / `remote` / `all` 三种范围下都能对上。
+ */
+export function matchBranchPatterns(
+  refs: readonly RefInfo[],
+  patterns: readonly string[],
+): string[] {
+  if (!patterns.length) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
   for (const ref of refs) {
-    if (!ref.remote) continue;
     const part = branchPart(ref.name);
-    if (part && localNames.has(part)) continue;
-    out.push(ref);
+    const hit = patterns.some((p) => globMatch(p, ref.name) || globMatch(p, part));
+    if (!hit || seen.has(part)) continue;
+    seen.add(part);
+    out.push(part);
   }
   return out;
+}
+
+/**
+ * 打开面板时的默认筛选：配置里的 glob > 固定分支 > 全部分支。
+ *
+ * 返回 `patternMiss` 是为了让调用方提醒用户"你配的 branchFilter 一条都没匹配上"，
+ * 而不是默默当成没配。
+ */
+export function defaultBranchSelection(
+  refs: readonly RefInfo[],
+  fixedShortNames: readonly string[],
+  patterns: readonly string[],
+): { branches: string[] | null; patternMiss: boolean } {
+  if (patterns.length) {
+    const matched = matchBranchPatterns(refs, patterns);
+    if (matched.length) return { branches: matched, patternMiss: false };
+    return {
+      branches: fixedShortNames.length ? [...fixedShortNames] : null,
+      patternMiss: true,
+    };
+  }
+  return { branches: fixedShortNames.length ? [...fixedShortNames] : null, patternMiss: false };
 }
 
 /** 习惯上算"长期分支"的名字——只用来做默认建议。 */
