@@ -75,7 +75,11 @@ gitGraph TB:
 - **配置默认值**：`gitTree.branchFilter` 收 glob（`release*`、`dev`、`origin/dev`），
   打开面板时按它勾选。配了却一条都没匹配上会在面板顶部提示，并退回固定分支。
 
-筛掉的分支不会进轨道计算——谱系、传播箭头、承载轨道都按剩下的分支重算，不会留下断线；
+筛选**只决定画哪些轨道**，不参与归属计算：版本号、合并节点、传播箭头仍然按当前范围里的
+全部分支算。所以只勾 `dev` 时，`dev` 只会显示**它自己改的版本**和“改动从哪次合并进来”的
+合并节点；从来源分支继承的提交不会变成 `/dev/1`、`/dev/2`。勾中的分支从来没改过这个文件
+时，面板会提示“选中的分支上没有改动”，而不是把别的分支的提交借过来。
+
 一个都不勾时保持原样（不会把图清成空白）。
 
 ## 与 git-tree 的关系
@@ -110,13 +114,13 @@ npm test             # 纯 Node，不需要 Python，不需要下载 Electron
 
 ```bash
 npm install
-npm run vsix                # → git-tree-vscode-0.2.5.vsix
+npm run vsix                # → git-tree-vscode-0.2.6.vsix
 ```
 
 内网机器（不需要网络、不需要 npm）：
 
 ```bash
-code --install-extension git-tree-vscode-0.2.5.vsix
+code --install-extension git-tree-vscode-0.2.6.vsix
 ```
 
 也可以直接在扩展面板右上角「…」→「从 VSIX 安装」。

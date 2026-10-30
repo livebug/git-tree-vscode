@@ -1,5 +1,5 @@
 /**
- * 分支筛选：glob 匹配、按名字挑 ref、默认选择，以及筛完之后谱系不能留断线。
+ * 分支筛选：glob 匹配、按名字挑 ref、默认选择，以及“筛选只隐藏轨道，不改提交归属”。
  *
  * 这些是纯函数 + fixture 上的行为断言，不依赖 VS Code。
  */
@@ -8,9 +8,15 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import { after, test } from 'node:test';
 
-import { buildFileGraph, buildLanes } from '../src/filegraph';
+import { buildFileGraph } from '../src/filegraph';
 import { RepoHandle, RefInfo, defaultBranchSelection, globMatch, matchBranchPatterns, selectRefs } from '../src/repo';
-import { REF_REPO_FIXED, buildRefRepo, tempDir } from './fixtures';
+import {
+  REF_REPO_FIXED,
+  SIMPLE_REPO_FIXED,
+  buildRefRepo,
+  buildSimpleRepo,
+  tempDir,
+} from './fixtures';
 
 function ref(name: string, remote = false): RefInfo {
   return { name, sha: '0'.repeat(40), ts: 0, subject: '', remote };
@@ -80,6 +86,7 @@ test('defaultBranchSelection：配置优先，配空退回固定分支', () => {
 
 const built: string[] = [];
 let refHandle: RepoHandle | null = null;
+let simple: RepoHandle | null = null;
 
 function refRepo(): RepoHandle {
   if (!refHandle) {
@@ -91,23 +98,43 @@ function refRepo(): RepoHandle {
   return refHandle;
 }
 
+function simpleRepo(): RepoHandle {
+  if (!simple) {
+    const dir = tempDir('gittree-filter-simple-');
+    buildSimpleRepo(dir);
+    built.push(dir);
+    simple = new RepoHandle(dir);
+  }
+  return simple;
+}
+
 after(() => {
   for (const dir of built) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('buildLanes：只保留选中的轨道，父分支不会指向被筛掉的分支', () => {
-  const lanes = buildLanes(refRepo(), REF_REPO_FIXED, 'local', new Set(['master', 'dev']));
-  const names = lanes.map((lane) => lane.name).sort();
-  assert.deepEqual(names, ['dev', 'master'], '只应该有 master 和 dev 两条轨道');
+test('筛选不改归属：只选 dev 时，不会把 fb-a 的提交算成 /dev/1', () => {
+  const handle = simpleRepo();
+  const all = buildFileGraph(handle, 'src/login.js', SIMPLE_REPO_FIXED);
+  const fb = all.lanes.find((lane) => lane.name === 'fb-a');
+  assert.ok(fb && fb.role === 'author' && fb.versions.length === 1, 'fixture 里 fb-a 才是作者');
+  const fbVersionSha = fb.versions[0].sha;
 
-  const present = new Set(names);
-  for (const lane of lanes) {
-    if (!lane.parentName) continue;
-    assert.ok(
-      present.has(lane.parentName),
-      `${lane.name} 的父分支 ${lane.parentName} 被筛掉了，谱系里不能留下悬空引用`,
-    );
+  const filtered = buildFileGraph(handle, 'src/login.js', SIMPLE_REPO_FIXED, {
+    branches: ['dev'],
+  });
+  const dev = filtered.lanes.find((lane) => lane.name === 'dev');
+  assert.ok(dev, 'dev 是勾中的分支，应该以承载轨道出现（改动是合并进来的）');
+  assert.equal(dev.role, 'carrier');
+  assert.equal(dev.versions.length, 0, 'dev 自己没改过这个文件，不能凭空出现版本');
+  for (const lane of filtered.lanes) {
+    for (const version of lane.versions) {
+      assert.notEqual(version.sha, fbVersionSha, 'fb-a 的提交不能挂到别的轨道上');
+    }
   }
+  assert.ok(
+    filtered.nodes.some((node) => node.kind === 'merge'),
+    '改动进 dev 的那次合并要保留成合并节点',
+  );
 });
 
 test('buildFileGraph：branches 过滤生效，且不筛时轨道更多', () => {
@@ -125,12 +152,26 @@ test('buildFileGraph：branches 过滤生效，且不筛时轨道更多', () => 
     '筛选后只该出现勾中的分支',
   );
   assert.equal(filtered.stats.lanes, filtered.lanes.length);
-  // 节点和边只能落在剩下的轨道上，不能引用被筛掉的下标
+
+  // 下标必须压紧且自洽：渲染器是按 lane 下标查颜色/坐标的
+  assert.deepEqual(
+    filtered.lanes.map((lane) => lane.lane).sort((a, b) => a - b),
+    filtered.lanes.map((_, i) => i),
+    '轨道下标应该从 0 开始连续',
+  );
+  const laneIds = new Set(filtered.lanes.map((lane) => lane.lane));
   for (const node of filtered.nodes) {
-    assert.ok(
-      filtered.lanes.some((lane) => lane.lane === node.lane),
-      `节点 ${node.short} 落在不存在的轨道 ${node.lane} 上`,
-    );
+    assert.ok(laneIds.has(node.lane), `节点 ${node.short} 落在不存在的轨道 ${node.lane} 上`);
+    if (node.via) {
+      assert.ok(
+        node.via.lane === -1 || laneIds.has(node.via.lane),
+        `合并节点的来源轨道 ${node.via.lane} 既不是 -1 也不存在`,
+      );
+    }
+  }
+  for (const edge of filtered.edges) {
+    assert.ok(laneIds.has(edge.fromLane) && laneIds.has(edge.toLane), '边的两端都必须是可见轨道');
+    if (edge.targetNode) assert.ok(laneIds.has(edge.targetNode.lane));
   }
 });
 

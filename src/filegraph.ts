@@ -186,10 +186,9 @@ export function buildLanes(
   repo: RepoHandle,
   fixedNames: readonly string[],
   scope: BranchScope = 'local',
-  names?: ReadonlySet<string>,
 ): LaneInfo[] {
   const store = repo.store();
-  const refs = selectRefs(repo.refs(), scope, names);
+  const refs = selectRefs(repo.refs(), scope);
   const byName = new Map(refs.map((r) => [r.name, r]));
 
   const allLanes: LaneInfo[] = [];
@@ -286,12 +285,14 @@ export function buildFileGraph(
     warnings.push('部分改动提交不在已加载的历史窗口内，已被忽略。');
   }
 
-  const allLanes = buildLanes(
-    repo,
-    fixedNames,
-    scope,
-    options.branches && options.branches.length ? new Set(options.branches) : undefined,
-  );
+  // 注意：**不**在这里按 options.branches 裁轨道。归属（谁是版本作者）和谱系
+  // 必须在全部范围内的分支上算，否则“只选 dev”会把 dev 来源分支的提交算成 dev 的版本。
+  // 筛选放到最后，只决定画哪些轨道，见下方“分支筛选”。
+  const allLanes = buildLanes(repo, fixedNames, scope);
+  const branchFilter =
+    options.branches && options.branches.length ? new Set(options.branches) : null;
+  const selectedBranch = (name: string): boolean =>
+    branchFilter !== null && (branchFilter.has(name) || branchFilter.has(branchPart(name)));
 
   const fileIndices = [...recordByIdx.keys()].sort((a, b) => ts[a] - ts[b]);
   const fileSet = new Set(fileIndices);
@@ -334,7 +335,9 @@ export function buildFileGraph(
   if (authors.length) {
     const authorSet = new Set(authors);
     for (const lane of allLanes) {
-      if (authorSet.has(lane) || lane.kind !== 'fixed') continue;
+      // 固定分支天然是承载轨道；筛选时，用户点名要看的其它分支也允许当承载轨道
+      // （这样“只选 dev”能看到改动是从哪次合并进 dev 的，而不是一片空白）。
+      if (authorSet.has(lane) || (lane.kind !== 'fixed' && !selectedBranch(lane.name))) continue;
       lane.carrierHits = fileIndices.filter((i) => lane.reach.has(i));
       if (lane.carrierHits.length) carriers.push(lane);
     }
@@ -776,6 +779,82 @@ export function buildFileGraph(
     });
   }
 
+  // -- 分支筛选：只决定“画哪些轨道”，不改归属 -------------------------
+  // 归属、谱系、合并节点都是在**全部**范围内的分支上算好的；这里才把没选中的
+  // 轨道摘掉、下标压紧。所以“只选 dev”不会再把 dev 来源分支上的提交算成 /dev/1。
+  if (branchFilter) {
+    const isVisible = selectedBranch;
+    const keep = new Map<number, number>();
+    for (const lane of lanePayload) {
+      if (!isVisible(lane.name)) continue;
+      keep.set(lane.lane, keep.size);
+    }
+
+    const keptLanes: LanePayload[] = [];
+    for (const lane of lanePayload) {
+      const next = keep.get(lane.lane);
+      if (next === undefined) continue;
+      lane.lane = next;
+      keptLanes.push(lane);
+    }
+    lanePayload.length = 0;
+    for (const lane of keptLanes) lanePayload.push(lane);
+
+    const keptNodes: NodePayload[] = [];
+    for (const node of nodes) {
+      const next = keep.get(node.lane);
+      if (next === undefined) continue;
+      node.lane = next;
+      // 来源分支被筛掉时，via 里的名字留着（提示里还能看出是谁带进来的），
+      // 但下标置 -1：渲染器查不到颜色会退回本轨道颜色。
+      if (node.via) node.via.lane = keep.get(node.via.lane) ?? -1;
+      keptNodes.push(node);
+    }
+    nodes.length = 0;
+    for (const node of keptNodes) nodes.push(node);
+    nodes.sort(
+      (a, b) =>
+        a.lane - b.lane || a.ts - b.ts || (a.sha < b.sha ? -1 : a.sha > b.sha ? 1 : 0),
+    );
+
+    const keptEdges: RawEdge[] = [];
+    for (const item of rawEdges) {
+      const from = keep.get(item.edge.fromLane);
+      const to = keep.get(item.edge.toLane);
+      if (from === undefined || to === undefined) continue;
+      item.edge.fromLane = from;
+      item.edge.toLane = to;
+      if (item.edge.targetNode) item.edge.targetNode.lane = to;
+      keptEdges.push(item);
+    }
+    rawEdges.length = 0;
+    for (const item of keptEdges) rawEdges.push(item);
+
+    const keptTrack = new Map<number, { start: number; end: number }>();
+    for (const [oldLane, track] of laneTrack) {
+      const next = keep.get(oldLane);
+      if (next !== undefined) keptTrack.set(next, track);
+    }
+    laneTrack.clear();
+    for (const [next, track] of keptTrack) laneTrack.set(next, track);
+
+    laneNameByIndex.clear();
+    for (const lane of lanePayload) laneNameByIndex.set(lane.lane, lane.name);
+
+    // 时间轴按留下来的轨道重新算，别给被筛掉的提交留白
+    minTs = null;
+    maxTs = null;
+    for (const node of nodes) bump(node.ts);
+    for (const item of rawEdges) {
+      bump(item.x1Ts);
+      bump(item.x2Ts);
+    }
+    for (const track of laneTrack.values()) {
+      bump(track.start);
+      bump(track.end);
+    }
+  }
+
   if (minTs === null) {
     const only = fileIndices.length ? ts[fileIndices[0]] : 0;
     minTs = only;
@@ -885,7 +964,8 @@ export function buildFileGraph(
       tags: tagCount,
       branches: branchSet.size,
       versions: lanePayload.reduce((sum, lane) => sum + lane.versions.length, 0),
-      merges: points.length,
+      // 按留下来的轨道数，别把被筛掉的轨道上的合并也算进去
+      merges: lanePayload.reduce((sum, lane) => sum + lane.mergeCount, 0),
     },
   };
 }

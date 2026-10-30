@@ -2,7 +2,7 @@
   "name": "git-tree-vscode",
   "displayName": "git-tree 版本树",
   "description": "右键文件查看 ClearCase 风格的版本树：每条分支一条竖向轨道，版本编号、合并虚线箭头、tag 标签。",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "publisher": "git-tree",
   "license": "MIT",
   "repository": {

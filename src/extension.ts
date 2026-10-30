@@ -278,22 +278,19 @@ async function loadPayload(state: PanelState): Promise<FileGraphPayload> {
     }
   }
 
-  let payload = buildFileGraph(handle, state.filePath, fixed, {
+  const payload = buildFileGraph(handle, state.filePath, fixed, {
     scope: state.scope,
     follow: state.follow,
     maxCommits: FILE_HISTORY_LIMIT,
     branches,
   });
 
-  // 筛选把包含这个文件的分支全筛掉了（比如文件只在 fb-* 上改过）：临时退回去，
-  // 不然用户看到的是空图，还以为文件没有历史。
+  // 选中的分支里没有这个文件的改动：不偷偷把别的分支的提交算过来，
+  // 也不自作主张恢复全部——只说清楚，用户自己决定要不要把别的分支勾上。
   if (branches && branches.length && !payload.lanes.length && payload.commits.length) {
-    payload = buildFileGraph(handle, state.filePath, fixed, {
-      scope: state.scope,
-      follow: state.follow,
-      maxCommits: FILE_HISTORY_LIMIT,
-    });
-    payload.warnings.push('这个文件不在选中的分支上，已临时显示包含它的分支。');
+    payload.warnings.push(
+      '这个文件在选中的分支上没有改动（改动可能都在别的分支上）。点「分支」把包含它的分支也勾上。',
+    );
   }
 
   if (branchFallback) {
